@@ -1,0 +1,7 @@
+# Copyright (c) Brandon Pacewic
+# SPDX-License-Identifier: MIT
+
+build/
+dist/
+__pycache__/
+*.egg-info/
