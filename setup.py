@@ -26,8 +26,8 @@ def main() -> None:
             "Programming Language :: Python :: 3",
             "License :: OSI Approved :: MIT License"
         ],
-        url="https://github.com/BrandonPacewic/pygpm",
-        packages=["pygpm"],
+        url="https://github.com/BrandonPacewic/branp",
+        packages=["branp"],
         entry_points={
             "console_scripts": [
                 "branp=branp.__main__:main"

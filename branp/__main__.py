@@ -5,7 +5,7 @@ import sys
 
 from typing import List
 
-from branp.main_parser import create_command, parse_command
+from branp.parser import create_command, parse_command
 
 
 def main(args: List[str] = sys.argv[1:]) -> None:

@@ -5,7 +5,7 @@ import sys
 
 from collections import namedtuple
 from importlib import import_module
-from optparse import OptionParser
+from optparse import OptionParser, OptionGroup
 from typing import Any, List, Tuple
 
 from branp import __version__
@@ -18,10 +18,23 @@ COMMANDS_DICT: dict[str, CommandInfo] = {
     "format": CommandInfo(
         "branp.format",
         "FormatCommand",
-        "Scripts used utilizing various types of formatters "
-        "across multiple files in a given directory."
+        "Scripts used to format various types of files utilizing "
+        "various types of different formatters."
     ),
 }
+
+
+def add_general_options(parser: OptionParser) -> None:
+    general_option_group = OptionGroup(parser, "General Options")
+
+    # Version option here for completeness sake. Will likely never change from v0
+    general_option_group.add_option(
+        "-v",
+        "--version",
+        dest="version",
+        action="store_true",
+        help="Show version number and exit."
+    )
 
 
 def create_main_parser() -> OptionParser:
@@ -34,6 +47,8 @@ def create_main_parser() -> OptionParser:
 
     parser.main = True
     parser.version = __version__
+
+    add_general_options(parser)
 
     parser.description = "\n".join(
         [""] + [
@@ -51,6 +66,10 @@ def parse_command(args: List[str]) -> Tuple[str, List[str]]:
 
     if general_options.version:
         parser.print_version()
+        sys.exit(0)
+
+    if not command_args or (command_args[0] == "help" and len(command_args) == 1):
+        parser.print_help()
         sys.exit(0)
 
     command_name = command_args[0]
@@ -78,6 +97,6 @@ def create_command(name: str, **kwargs: Any) -> Command:
 def get_similar_commands(command_name: str) -> str | None:
     import difflib
     command_name = command_name.lower()
-    close_commands = difflib.get_close_matches(command_name, COMMANDS_DICT.key())
+    close_commands = difflib.get_close_matches(command_name, COMMANDS_DICT.keys())
 
     return close_commands[0] if close_commands else None
