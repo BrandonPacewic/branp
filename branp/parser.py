@@ -25,6 +25,11 @@ COMMANDS_DICT: dict[str, CommandInfo] = {
         "branp.pep_format",
         "PepFormatCommand",
         "Call autopep8 on a collection of files.",
+    ),
+    "dbrun": CommandInfo(
+        "branp.dbrun",
+        "DbrunCommand",
+        "Debug and Run a standalone C++ file."
     )
 }
 
