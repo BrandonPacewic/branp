@@ -36,7 +36,7 @@ class Command:
 
     def parse(self, args: List[str]) -> Tuple[optparse.Values, List[str]]:
         return self.parser.parse_args(args)
-    
+
     def main(self, args: List[str]) -> None:
         options, args = self.parse(args)
         self.run(options, args)
@@ -59,18 +59,23 @@ class FormatCommand(Command):
             args.append(".")
 
         for arg in args:
-            if not os.path.isdir(arg):
-                print(f"{arg} is not a valid directory")
+            if os.path.isdir(arg):
+                for dir, _, filenames in os.walk(arg):
+                    for filename in filenames:
+                        if filename.split(".")[-1] in self.file_targets:
+                            files.append(f"{dir}/{filename}")
+            elif os.path.isfile(arg):
+                # TODO: Add warning if file suffix is not found within file
+                # targets
+                if arg.split(".")[-1] in self.file_targets:
+                    files.append(arg)
+            else:
+                print(f"{arg} is not a valid file or directory.")
                 sys.exit(1)
-
-            for dir, _, filenames in os.walk(arg):
-                for filename in filenames:
-                    if filename.split(".")[-1] in self.file_targets:
-                        files.append(f"{dir}/{filename}")
 
         print(f"Formatting {len(files)} file(s)...")
 
-        # TODO: Would be super cool to have a progress bar when this is going for larger projects.
+        # TODO: Progress bar
         for file in files:
             subprocess.call(
                 format_command.split() + [file],

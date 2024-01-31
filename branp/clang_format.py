@@ -14,13 +14,13 @@ from branp.util import get_similar
 
 class ClangFormatCommand(FormatCommand):
     """
-    Call clang-format over a large collection of files.
+    Call clang-format over a collection of files.
     """
 
-    file_targets = {"cpp", "h", "cc"}
+    file_targets = {"cpp", "h", "cc", "hpp", "cxx", "c", "cs"}
 
     usage = """
-      %prog clang [options] <format path>"""
+      %prog clang-format [options] <format path(s)>"""
 
     def add_options(self) -> None:
         self.cmd_options.add_option(
@@ -36,7 +36,6 @@ class ClangFormatCommand(FormatCommand):
             return "clang-format -i -style=file"
 
         config_file_options: List[str] = []
-        config_file = ""
 
         if os.path.isdir(CONFIG_DIR):
             for dir, _, filenames in os.walk(CONFIG_DIR):
@@ -45,6 +44,7 @@ class ClangFormatCommand(FormatCommand):
                         config_file_options.append(os.path.join(dir, filename))
 
         config_option_prefixes = [x.split("/")[-1].split(".")[0].lower() for x in config_file_options]
+        config_file: str = ""
 
         for option, option_prefix in zip(config_file_options, config_option_prefixes):
             if option_prefix == options.config.lower():

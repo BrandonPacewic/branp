@@ -19,8 +19,13 @@ COMMANDS_DICT: dict[str, CommandInfo] = {
     "clang-format": CommandInfo(
         "branp.clang_format",
         "ClangFormatCommand",
-        "Call clang-format over a large collection of files.",
+        "Call clang-format on a collection of files.",
     ),
+    "pep8": CommandInfo(
+        "branp.pep_format",
+        "PepFormatCommand",
+        "Call autopep8 on a collection of files.",
+    )
 }
 
 
