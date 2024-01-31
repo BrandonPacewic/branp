@@ -10,16 +10,16 @@ from typing import Any, List, Tuple
 
 from branp import __version__
 from branp.command import Command
+from branp.util import get_similar
 
 
 CommandInfo = namedtuple("commandInfo", "module, class_name, summary")
 
 COMMANDS_DICT: dict[str, CommandInfo] = {
-    "format": CommandInfo(
-        "branp.format",
-        "FormatCommand",
-        "Scripts used to format various types of files utilizing "
-        "various types of different formatters."
+    "clang-format": CommandInfo(
+        "branp.clang_format",
+        "ClangFormatCommand",
+        "Call clang-format over a large collection of files.",
     ),
 }
 
@@ -62,6 +62,12 @@ def create_main_parser() -> OptionParser:
 
 def parse_command(args: List[str]) -> Tuple[str, List[str]]:
     parser = create_main_parser()
+
+    # NOTE: Parser calls `disable_interspersed_args()`, so the result
+    # will look like this:
+    #  args: ['--nocolor', 'status', '--help']
+    #  general_options: ['--nocolor']
+    #  command_args: ['status', '--help']
     general_options, command_args = parser.parse_args(args)
 
     if general_options.version:
@@ -76,13 +82,16 @@ def parse_command(args: List[str]) -> Tuple[str, List[str]]:
 
     if command_name not in COMMANDS_DICT:
         msg = [f"Unknown command '{command_name}'."]
-        guess = get_similar_commands(command_name)
+        guess = get_similar(command_name, COMMANDS_DICT.keys())
 
         if guess:
             msg.append(f"Did you mean '{guess}'?")
 
         print("\n\n".join(msg))
         sys.exit(1)
+
+    command_args.remove(command_name)
+    return command_name, command_args
 
 
 def create_command(name: str, **kwargs: Any) -> Command:
@@ -92,11 +101,3 @@ def create_command(name: str, **kwargs: Any) -> Command:
     command = command_class(name, summary, **kwargs)
 
     return command
-
-
-def get_similar_commands(command_name: str) -> str | None:
-    import difflib
-    command_name = command_name.lower()
-    close_commands = difflib.get_close_matches(command_name, COMMANDS_DICT.keys())
-
-    return close_commands[0] if close_commands else None
