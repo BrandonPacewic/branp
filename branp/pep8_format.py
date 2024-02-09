@@ -6,7 +6,7 @@ from optparse import Values
 from branp.command import FormatCommand
 
 
-class PepFormatCommand(FormatCommand):
+class Pep8FormatCommand(FormatCommand):
     """
     Call autopep8 over a collection of files.
     """

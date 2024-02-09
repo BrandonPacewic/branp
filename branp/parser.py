@@ -22,15 +22,25 @@ COMMANDS_DICT: dict[str, CommandInfo] = {
         "Call clang-format on a collection of files.",
     ),
     "pep8": CommandInfo(
-        "branp.pep_format",
-        "PepFormatCommand",
+        "branp.pep8_format",
+        "Pep8FormatCommand",
         "Call autopep8 on a collection of files.",
     ),
     "dbrun": CommandInfo(
         "branp.dbrun",
         "DbrunCommand",
-        "Debug and Run a standalone C++ file."
-    )
+        "Debug and Run a standalone C++ file.",
+    ),
+    "test_samples": CommandInfo(
+        "branp.test_samples",
+        "TestSamplesCommand",
+        "Test run competitive programming sample test cases.",
+    ),
+    "sample_gen": CommandInfo(
+        "branp.sample_gen",
+        "SampleGenCommand",
+        "Generate sample test cases for competitive programming problems.",
+    ),
 }
 
 

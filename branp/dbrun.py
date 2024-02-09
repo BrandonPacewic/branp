@@ -16,6 +16,9 @@ class DbrunCommand(Command):
     Compile and execute a standalone C++ file while defining a testing macro.
     """
 
+    usage = """
+      %prog dbrun [options] <file>"""
+
     debug_flag = "DBG_MODE"
     compile_command = f"g++ -g -std=c++17 -Wall -D{debug_flag}"
 
@@ -35,18 +38,10 @@ class DbrunCommand(Command):
 
         print(f"[DEBUG MODE] Compiling {file} with c++17...")
 
-        subprocess.call(
-            self.compile_command.split() + [file],
-            bufsize=1,
-            shell=False,
-        )
+        subprocess.call(self.compile_command.split() + [file], bufsize=1, shell=False)
 
         # TODO: Add timing
         print(f"Successfully compiled in xxx")
         print('--------------------')
 
-        subprocess.call(
-            ["./a.out"],
-            bufsize=1,
-            shell=False,
-        )
+        subprocess.call(["./a.out"], bufsize=1, shell=False)
