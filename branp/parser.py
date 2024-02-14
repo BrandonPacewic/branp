@@ -31,15 +31,20 @@ COMMANDS_DICT: dict[str, CommandInfo] = {
         "DbrunCommand",
         "Debug and Run a standalone C++ file.",
     ),
-    "test_samples": CommandInfo(
+    "test-samples": CommandInfo(
         "branp.test_samples",
         "TestSamplesCommand",
         "Test run competitive programming sample test cases.",
     ),
-    "sample_gen": CommandInfo(
+    "sample-gen": CommandInfo(
         "branp.sample_gen",
         "SampleGenCommand",
         "Generate sample test cases for competitive programming problems.",
+    ),
+    "template-gen": CommandInfo(
+        "branp.template_gen",
+        "TemplateGenCommand",
+        "Generate file templates."
     ),
 }
 

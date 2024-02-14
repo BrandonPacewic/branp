@@ -42,6 +42,6 @@ class DbrunCommand(Command):
 
         # TODO: Add timing
         print(f"Successfully compiled in xxx")
-        print('--------------------')
+        print("--------------------")
 
         subprocess.call(["./a.out"], bufsize=1, shell=False)
