@@ -65,8 +65,7 @@ class FormatCommand(Command):
                         if filename.split(".")[-1] in self.file_targets:
                             files.append(f"{dir}/{filename}")
             elif os.path.isfile(arg):
-                # TODO: Add warning if file suffix is not found within file
-                # targets
+                # TODO: Add warning if file suffix is not found within file targets
                 if arg.split(".")[-1] in self.file_targets:
                     files.append(arg)
             else:

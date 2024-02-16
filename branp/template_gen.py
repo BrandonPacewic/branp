@@ -22,6 +22,14 @@ class TemplateGenCommand(Command):
     usage = """
       %prog template_gen [options] <file>"""
 
+    def add_options(self) -> None:
+        self.cmd_options.add_option(
+            "-l",
+            "--link",
+            action="store_true",
+            dest="link",
+        )
+
     def run(self, options: Values, args: List[str]) -> None:
         if not len(args) or len(args) > 2:
             print("Expected a different organization of arguments.")  # TODO: Make better
@@ -61,8 +69,10 @@ class TemplateGenCommand(Command):
 
         template = matched_template[0]
 
+        command_prefix = "ln" if options.link else "cp"
+
         if len(args) == 1:
-            subprocess.call(["cp", template, "."], bufsize=1, shell=False)
+            subprocess.call([command_prefix, template, "."], bufsize=1, shell=False)
             sys.exit(0)
 
         name_count: int | str
@@ -73,13 +83,19 @@ class TemplateGenCommand(Command):
             name_count = args[1]
 
         if isinstance(name_count, int):
+            if options.link:
+                print("Invalid option: --link for multiple file generation.")
+                sys.exit(1)
+
             for i in range(name_count):
                 file_name = f"{ascii_uppercase[i]}.{template.split('.')[-1]}"
-                subprocess.call(["cp", template, f"{os.getcwd()}/{file_name}"], bufsize=1, shell=False)
+                subprocess.call([command_prefix, template, f"{os.getcwd()}/{file_name}"], bufsize=1, shell=False)
         elif isinstance(name_count, str):
+
             file_name = name_count if name_count.endswith(template.split(
                 ".")[-1]) else f"{name_count}.{template.split('.')[-1]}"
-            subprocess.call(["cp", template, f"{os.getcwd()}/{file_name}"], bufsize=1, shell=False)
+            subprocess.call([command_prefix, template, f"{os.getcwd()}/{file_name}"], bufsize=1, shell=False)
+
         else:
             print(f"Your input was evaluated to {type(name_count)}.")
             sys.exit(1)
