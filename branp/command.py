@@ -43,6 +43,10 @@ class Command:
 
 
 class FormatCommand(Command):
+    dir_blacklist: Set[str] = {
+        "build",
+    }
+
     config_file: str = ""
     file_targets: Set[str] = {}
 
@@ -61,6 +65,9 @@ class FormatCommand(Command):
         for arg in args:
             if os.path.isdir(arg):
                 for dir, _, filenames in os.walk(arg):
+                    if any(x in self.dir_blacklist for x in dir.split("/")):
+                        continue
+
                     for filename in filenames:
                         if filename.split(".")[-1] in self.file_targets:
                             files.append(f"{dir}/{filename}")
