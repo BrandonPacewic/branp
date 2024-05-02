@@ -8,6 +8,10 @@ import subprocess
 
 from typing import List, Set, Tuple
 
+from branp.logging import get_logger
+
+logger = get_logger()
+
 
 class Command:
     usage: str = ""

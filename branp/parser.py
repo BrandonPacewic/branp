@@ -10,7 +10,10 @@ from typing import Any, List, Tuple
 
 from branp import __version__
 from branp.command import Command
+from branp.logging import get_logger
 from branp.util import get_similar
+
+logger = get_logger()
 
 
 CommandInfo = namedtuple("commandInfo", "module, class_name, summary")

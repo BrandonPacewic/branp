@@ -9,6 +9,9 @@ from optparse import Values
 from typing import List
 
 from branp.command import Command
+from branp.logging import get_logger
+
+logger = get_logger()
 
 
 class SampleGenCommand(Command):

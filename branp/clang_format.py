@@ -9,7 +9,10 @@ from typing import List
 
 from branp.core import CONFIG_DIR
 from branp.command import FormatCommand
+from branp.logging import get_logger
 from branp.util import get_similar
+
+logger = get_logger()
 
 
 class ClangFormatCommand(FormatCommand):

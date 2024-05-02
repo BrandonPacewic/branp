@@ -11,7 +11,10 @@ from typing import List
 
 from branp.command import Command
 from branp.dbrun import DbrunCommand
+from branp.logging import get_logger
 from branp.util import GREEN, RED, ENDC
+
+logger = get_logger()
 
 
 class TestSamplesCommand(Command):
