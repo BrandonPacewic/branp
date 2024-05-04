@@ -64,6 +64,24 @@ def add_general_options(parser: OptionParser) -> None:
         help="Show version number and exit."
     )
 
+    general_option_group.add_option(
+        "-q",
+        "--quiet",
+        dest="quiet",
+        action="count",
+        default=0,
+        help="Decreases output verbosity. Option is additive and can be used up to 3 times."
+    )
+
+    general_option_group.add_option(
+        "-V",
+        "--verbose",
+        dest="verbose",
+        action="count",
+        default=0,
+        help="Increases output verbosity. Option is additive and can be used up to 3 times."
+    )
+
 
 def create_main_parser() -> OptionParser:
     parser = OptionParser(
