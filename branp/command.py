@@ -8,7 +8,7 @@ import subprocess
 
 from typing import List, Set, Tuple
 
-from branp.logging import get_logger
+from branp.logging import get_logger, setup_logging
 
 logger = get_logger()
 
@@ -43,6 +43,10 @@ class Command:
 
     def main(self, args: List[str]) -> None:
         options, args = self.parse(args)
+
+        self.verbosity = options.verbose - options.quiet
+        setup_logging(self.verbosity)
+
         self.run(options, args)
 
 
