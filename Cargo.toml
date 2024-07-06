@@ -1,0 +1,8 @@
+[package]
+name = "branp-cli"
+version = "0.1.0"
+description = "A blazingly fast, general use, CLI tool."
+license = "MIT"
+readme = "README.md"
+authors = ["Brandon Pacewic <pacewicbrandon@gmail.com>"]
+edition = "2021"
