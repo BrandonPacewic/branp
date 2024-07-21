@@ -1,9 +1,7 @@
 use clap::{ArgMatches, Command};
 
 pub fn branp() -> Vec<Command> {
-    vec![
-        dbrun::command(),
-    ]
+    vec![dbrun::command()]
 }
 
 pub type Exec = fn(&ArgMatches);

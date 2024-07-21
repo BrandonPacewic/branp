@@ -1,15 +1,17 @@
-use clap::{ArgMatches, Command, Arg};
+use clap::{Arg, ArgMatches, Command};
 use std::path::Path;
 use std::process::Command as ProcessCommand;
 use std::time::Instant;
 
 pub fn command() -> Command {
     Command::new("dbrun")
-    .about("Compile and execute a standalone C++ file.")
-    .arg(Arg::new("file")
-    .help("The file to run on")
-    .required(true)
-    .index(1))
+        .about("Compile and execute a standalone C++ file.")
+        .arg(
+            Arg::new("file")
+                .help("The file to run on")
+                .required(true)
+                .index(1),
+        )
 }
 
 pub fn exec(args: &ArgMatches) {
