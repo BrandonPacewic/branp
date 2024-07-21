@@ -1,7 +1,6 @@
 use clap::{ArgMatches, Command};
 
 mod commands;
-mod parser;
 
 fn main() {
     let args = branp().try_get_matches().unwrap();
