@@ -23,12 +23,7 @@ enum Exec {
 
 impl Exec {
     fn infer(cmd: &str) -> Option<Self> {
-        if let Some(exec) = commands::branp_exec(cmd) {
-            Some(Self::Branp(exec))
-        } else {
-            // TODO: Add external commands
-            None
-        }
+        commands::branp_exec(cmd).map(Self::Branp)
     }
 
     fn exec(self, subcommand_args: &ArgMatches) {
