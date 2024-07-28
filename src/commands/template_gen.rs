@@ -22,7 +22,6 @@ pub fn exec(args: &ArgMatches) {
         }
     };
 
-    // Modify the file name to remove .cpp extension if necessary
     if file.ends_with(".cpp") {
         file = file.trim_end_matches(".cpp").to_string();
     }
@@ -30,14 +29,11 @@ pub fn exec(args: &ArgMatches) {
     let test_input = format!("{}_input.txt", file);
     let test_output = format!("{}_output.txt", file);
 
-    // Create the test input and output files
     File::create(&test_input).expect("Failed to create test input file");
     File::create(&test_output).expect("Failed to create test output file");
 
-    // Get the default editor from the environment variable
     let editor = env::var("EDITOR").expect("EDITOR environment variable not set");
 
-    // Open the test input and output files in the default editor
     ProcessCommand::new(&editor)
         .arg(&test_input)
         .status()
