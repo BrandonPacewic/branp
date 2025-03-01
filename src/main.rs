@@ -38,12 +38,6 @@ impl Exec {
     }
 }
 
-fn branp() -> Command {
-    Command::new("branp")
-        .allow_external_subcommands(true)
-        .subcommands(commands::branp())
-}
-
 const BUILTIN_ALIASES: [(&str, &str, &str); 1] = [("f", "format", "alias: format")];
 
 fn builtin_aliases_execs(cmd: &str) -> Option<&(&str, &str, &str)> {
@@ -101,4 +95,19 @@ fn expand_aliases(args: ArgMatches, mut already_expanded: Vec<String>) -> Option
     }
 
     Some(args)
+}
+
+fn branp() -> Command {
+    Command::new("branp")
+        .allow_external_subcommands(true)
+        .help_template(color_print::cstr!(
+            "\
+<green,bold>Usage:</> <cyan,bold>bp</> <cyan>[OPTIONS] [COMMAND]</>
+
+<green,bold>Commands:</>
+    <cyan,bold>format</>, <cyan,bold>f</>       Format the current working directory
+    <cyan,bold>dbrun</>           Run a standalone C++ code file
+    <cyan,bold>template-gen</>    Generate test case files for a given file name"
+        ))
+        .subcommands(commands::branp())
 }

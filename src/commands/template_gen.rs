@@ -5,7 +5,7 @@ use std::process::Command as ProcessCommand;
 
 pub fn command() -> Command {
     Command::new("template-gen")
-        .about("Generate templates from global template files.")
+        .about("Generate test case files for a given file name")
         .arg(
             Arg::new("file")
                 .help("The file to run on")
