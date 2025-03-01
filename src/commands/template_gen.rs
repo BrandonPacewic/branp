@@ -3,6 +3,8 @@ use std::env;
 use std::fs::File;
 use std::process::Command as ProcessCommand;
 
+use crate::context::GlobalContext;
+
 pub fn command() -> Command {
     Command::new("template-gen")
         .about("Generate test case files for a given file name")
@@ -14,7 +16,7 @@ pub fn command() -> Command {
         )
 }
 
-pub fn exec(args: &ArgMatches) {
+pub fn exec(_gctx: &mut GlobalContext, args: &ArgMatches) {
     let mut file = match args.get_one::<String>("file") {
         Some(val) => val.clone(),
         None => {

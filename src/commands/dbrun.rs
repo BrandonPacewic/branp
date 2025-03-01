@@ -3,6 +3,8 @@ use std::path::Path;
 use std::process::Command as ProcessCommand;
 use std::time::Instant;
 
+use crate::context::GlobalContext;
+
 pub fn command() -> Command {
     Command::new("dbrun")
         .about("Compile and execute a standalone C++ file.")
@@ -14,7 +16,7 @@ pub fn command() -> Command {
         )
 }
 
-pub fn exec(args: &ArgMatches) {
+pub fn exec(_gctx: &mut GlobalContext, args: &ArgMatches) {
     let file = match args.get_one::<String>("file") {
         Some(val) => val.clone(),
         None => {

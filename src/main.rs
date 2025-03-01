@@ -1,13 +1,22 @@
 use std::ffi::OsString;
 
 use clap::{ArgMatches, Command};
-use commands::branp_exec;
+
+use crate::commands::branp_exec;
+use crate::context::GlobalContext;
 
 mod commands;
+mod context;
 
 fn main() {
     let args = branp().try_get_matches().unwrap();
     let expanded_args = expand_aliases(args, vec![]).unwrap();
+    let mut gctx = match GlobalContext::default() {
+        Some(gctx) => gctx,
+        None => {
+            panic!("Failed to create global context");
+        }
+    };
 
     let (cmd, subcommand_args) = match expanded_args.subcommand() {
         Some((cmd, args)) => (cmd, args),
@@ -19,7 +28,7 @@ fn main() {
     };
 
     let exec = Exec::infer(cmd).expect("");
-    exec.exec(subcommand_args);
+    exec.exec(&mut gctx, subcommand_args);
 }
 
 enum Exec {
@@ -31,9 +40,9 @@ impl Exec {
         commands::branp_exec(cmd).map(Self::Branp)
     }
 
-    fn exec(self, subcommand_args: &ArgMatches) {
+    fn exec(self, gctx: &mut context::GlobalContext, subcommand_args: &ArgMatches) {
         match self {
-            Self::Branp(exec) => exec(subcommand_args),
+            Self::Branp(exec) => exec(gctx, subcommand_args),
         }
     }
 }

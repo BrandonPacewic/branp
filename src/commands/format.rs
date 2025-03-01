@@ -1,8 +1,9 @@
 use clap::{Arg, ArgMatches, Command};
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
+
+use crate::context::GlobalContext;
 
 const FILE_TARGETS: [&str; 7] = ["cpp", "h", "cc", "hpp", "cxx", "c", "cs"];
 
@@ -21,10 +22,10 @@ pub fn command() -> Command {
         )
 }
 
-pub fn exec(args: &ArgMatches) {
+pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
     println!("Indexing...");
 
-    let config = get_clang_format_config(args);
+    let config = get_clang_format_config(gctx, args);
     let mut files: Vec<PathBuf> = Vec::new();
     let paths = vec![PathBuf::from(".")];
 
@@ -59,10 +60,9 @@ pub fn exec(args: &ArgMatches) {
     println!("Done!");
 }
 
-fn get_clang_format_config(args: &ArgMatches) -> Option<String> {
+fn get_clang_format_config(gcxt: &GlobalContext, args: &ArgMatches) -> Option<String> {
     let config = args.get_one::<String>("config")?;
-    let home = env::var("HOME").unwrap();
-    let config_dir = Path::new(&home).join(".config/branp/format");
+    let config_dir = Path::new(&gcxt.home()).join(".config/branp/format");
 
     let mut config_files = Vec::new();
     if let Ok(entries) = fs::read_dir(&config_dir) {
