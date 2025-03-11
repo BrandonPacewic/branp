@@ -14,6 +14,11 @@ impl GlobalContext {
         Some(Self::new(PathBuf::from(homedir)))
     }
 
+    pub fn configure(&mut self, _quiet: bool) {
+        // Not doing anything with quiet for now. This will be expanded in the future when more things
+        // need to be configurable.
+    }
+
     pub fn home(&self) -> &PathBuf {
         &self.home_path
     }
