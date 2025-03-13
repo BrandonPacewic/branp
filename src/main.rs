@@ -30,7 +30,7 @@ fn main() {
             }
         };
 
-        let exec = Exec::infer(cmd).expect("");
+        let exec = Exec::infer(cmd);
         configure_gctx(&mut gctx, &expanded_args, subcommand_args, global_args);
         exec.exec(&mut gctx, subcommand_args);
     }
@@ -41,8 +41,16 @@ enum Exec {
 }
 
 impl Exec {
-    fn infer(cmd: &str) -> Option<Self> {
-        commands::branp_exec(cmd).map(Self::Branp)
+    fn infer(cmd: &str) -> Self {
+        if let Some(exec) = commands::branp_exec(cmd) {
+            Self::Branp(exec)
+        } else {
+            color_print::cprintln!(
+                "<red,bold>error</>: <yellow>{}</> is not a valid subcommand",
+                cmd
+            );
+            std::process::exit(1);
+        }
     }
 
     fn exec(self, gctx: &mut context::GlobalContext, subcommand_args: &ArgMatches) {
