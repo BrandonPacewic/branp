@@ -20,8 +20,10 @@ fn main() {
         }
     };
 
+    let is_verbose = expanded_args.get_count("verbose") > 0;
+
     if expanded_args.get_flag("version") {
-        let version = get_version_string(false); // TODO: Add verbose flag
+        let version = get_version_string(is_verbose);
         print!("{}", version);
     } else {
         let (cmd, subcommand_args) = match expanded_args.subcommand() {
@@ -75,12 +77,14 @@ fn aliased_command(command: &str) -> Option<Vec<String>> {
 
 #[derive(Default)]
 struct GlobalArgs {
+    verbose: u32,
     quiet: bool,
 }
 
 impl GlobalArgs {
     fn new(args: &ArgMatches) -> Self {
         Self {
+            verbose: args.get_count("verbose") as u32,
             quiet: args.get_flag("quiet"),
         }
     }
@@ -150,8 +154,9 @@ fn configure_gctx(
     global_args: GlobalArgs,
 ) {
     let quiet = args.get_flag("quiet") || subcommand_args.get_flag("quiet") || global_args.quiet;
+    let verbose = global_args.verbose + args.get_count("verbose") as u32;
 
-    gctx.configure(quiet);
+    gctx.configure(verbose, quiet);
 }
 
 fn get_version_string(is_verbose: bool) -> String {
@@ -168,7 +173,7 @@ fn get_version_string(is_verbose: bool) -> String {
             version_string.push_str("commit-info: unknown\n");
         }
     } else {
-        version_string.push_str("\n");
+        version_string.push('\n');
     }
 
     version_string
@@ -192,6 +197,14 @@ fn branp() -> Command {
                 .long("version")
                 .help("Print version info and exit")
                 .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("verbose")
+                .short('v')
+                .long("verbose")
+                .help("Use verbose output (-vv very verbose)")
+                .action(ArgAction::Count)
+                .global(true),
         )
         .arg(
             Arg::new("quiet")

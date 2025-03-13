@@ -2,7 +2,7 @@
 //!
 //! This script runs automatically before the build process and extracts Git commit
 //! information from the current repository. The extracted metadata includes:
-//! 
+//!
 //! - The full commit hash (`BRANP_GIT_HASH`)
 //! - A short commit hash (`BRANP_GIT_SHORT_HASH`)
 //! - The commit date (`BRANP_GIT_DATE`)
@@ -13,7 +13,7 @@
 //! This script runs before every build but will not affect caching unless the Git commit changes.
 //! If `.git/` is missing (e.g., when using a source tarball), no commit info will be available
 //! to the final binary and the git metadata will be omitted from the version output.
-//! 
+//!
 
 use std::path::Path;
 use std::process::Command;
