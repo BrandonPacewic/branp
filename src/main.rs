@@ -4,9 +4,11 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::commands::branp_exec;
 use crate::context::GlobalContext;
+use crate::version::get_version_info;
 
 mod commands;
 mod context;
+mod version;
 
 fn main() {
     let args = branp().try_get_matches().unwrap();
@@ -19,7 +21,8 @@ fn main() {
     };
 
     if expanded_args.get_flag("version") {
-        println!("Branp version: {}", env!("CARGO_PKG_VERSION"));
+        let version = get_version_string(false); // TODO: Add verbose flag
+        print!("{}", version);
     } else {
         let (cmd, subcommand_args) = match expanded_args.subcommand() {
             Some((cmd, args)) => (cmd, args),
@@ -149,6 +152,26 @@ fn configure_gctx(
     let quiet = args.get_flag("quiet") || subcommand_args.get_flag("quiet") || global_args.quiet;
 
     gctx.configure(quiet);
+}
+
+fn get_version_string(is_verbose: bool) -> String {
+    let version = get_version_info();
+    let mut version_string = format!("branp {}", version);
+    if is_verbose {
+        version_string.push_str(" (rust)\n");
+
+        if let Some(ref ci) = version.commit_info {
+            version_string.push_str(&format!("commit-hash: {}\n", ci.commit_hash));
+            version_string.push_str(&format!("short-hash:  {}\n", ci.short_commit_hash));
+            version_string.push_str(&format!("commit-date: {}\n", ci.commit_date));
+        } else {
+            version_string.push_str("commit-info: unknown\n");
+        }
+    } else {
+        version_string.push_str("\n");
+    }
+
+    version_string
 }
 
 fn branp() -> Command {
