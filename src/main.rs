@@ -186,6 +186,9 @@ fn branp() -> Command {
             "\
 <green,bold>Usage:</> <cyan,bold>bp</> <cyan>[OPTIONS] [COMMAND]</>
 
+<green,bold>Options:</>
+{options}
+
 <green,bold>Commands:</>
     <cyan,bold>format</>, <cyan,bold>f</>       Format the current working directory
     <cyan,bold>dbrun</>           Run a standalone C++ code file
