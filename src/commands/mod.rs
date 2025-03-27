@@ -3,7 +3,12 @@ use clap::{ArgMatches, Command};
 use crate::context::GlobalContext;
 
 pub fn branp() -> Vec<Command> {
-    vec![dbrun::command(), template_gen::command(), format::command()]
+    vec![
+        dbrun::command(),
+        template_gen::command(),
+        format::command(),
+        gen::command(),
+    ]
 }
 
 pub type Exec = fn(&mut GlobalContext, &ArgMatches);
@@ -13,6 +18,7 @@ pub fn branp_exec(cmd: &str) -> Option<Exec> {
         "dbrun" => dbrun::exec,
         "template-gen" => template_gen::exec,
         "format" => format::exec,
+        "gen" => gen::exec,
         _ => return None,
     };
 
@@ -21,4 +27,5 @@ pub fn branp_exec(cmd: &str) -> Option<Exec> {
 
 pub mod dbrun;
 pub mod format;
+pub mod gen;
 pub mod template_gen;

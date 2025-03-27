@@ -65,7 +65,8 @@ impl Exec {
     }
 }
 
-const BUILTIN_ALIASES: [(&str, &str, &str); 1] = [("f", "format", "alias: format")];
+const BUILTIN_ALIASES: [(&str, &str, &str); 2] =
+    [("f", "format", "alias: format"), ("g", "gen", "alias: gen")];
 
 fn builtin_aliases_execs(cmd: &str) -> Option<&(&str, &str, &str)> {
     BUILTIN_ALIASES.iter().find(|alias| alias.0 == cmd)

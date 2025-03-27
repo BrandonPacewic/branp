@@ -1,17 +1,23 @@
-use std::{env, path::PathBuf};
+use std::env;
+use std::path::PathBuf;
 
 pub struct GlobalContext {
     home_path: PathBuf,
+    cwd: PathBuf,
 }
 
 impl GlobalContext {
-    pub fn new(homedir: PathBuf) -> Self {
-        Self { home_path: homedir }
+    pub fn new(cwd: PathBuf, homedir: PathBuf) -> Self {
+        Self {
+            home_path: homedir,
+            cwd,
+        }
     }
 
     pub fn default() -> Option<Self> {
         let homedir = env::var("HOME").expect("HOME environment variable not set.");
-        Some(Self::new(PathBuf::from(homedir)))
+        let cwd = env::current_dir().expect("Failed to get current directory.");
+        Some(Self::new(cwd, PathBuf::from(homedir)))
     }
 
     pub fn configure(&mut self, _verbose: u32, _quiet: bool) {
@@ -21,5 +27,13 @@ impl GlobalContext {
 
     pub fn home(&self) -> &PathBuf {
         &self.home_path
+    }
+
+    pub fn templates_dir(&self) -> PathBuf {
+        self.home_path.join(".config/branp/templates")
+    }
+
+    pub fn cwd(&self) -> &PathBuf {
+        &self.cwd
     }
 }
