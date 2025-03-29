@@ -23,7 +23,7 @@ pub fn command() -> Command {
 }
 
 pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
-    println!("Indexing...");
+    gctx.shell().note("Indexing...");
 
     let config = get_clang_format_config(gctx, args);
     let mut files: Vec<PathBuf> = Vec::new();
@@ -35,7 +35,8 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
         }
     }
 
-    println!("Formatting {} file(s)...", files.len());
+    gctx.shell()
+        .note(format!("Formatting {} file(s)...", files.len()));
 
     for file in files {
         let mut command = ProcessCommand::new("clang-format");
@@ -57,12 +58,12 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
         }
     }
 
-    println!("Done!");
+    gctx.shell().note("Done!");
 }
 
-fn get_clang_format_config(gcxt: &GlobalContext, args: &ArgMatches) -> Option<String> {
+fn get_clang_format_config(gctx: &mut GlobalContext, args: &ArgMatches) -> Option<String> {
     let config = args.get_one::<String>("config")?;
-    let config_dir = Path::new(&gcxt.home()).join(".config/branp/format");
+    let config_dir = Path::new(&gctx.home()).join(".config/branp/format");
 
     let mut config_files = Vec::new();
     if let Ok(entries) = fs::read_dir(&config_dir) {
