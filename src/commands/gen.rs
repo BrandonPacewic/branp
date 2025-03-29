@@ -40,13 +40,11 @@ pub fn command() -> Command {
 
 pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
     let templates_dir = gctx.templates_dir();
-    let paths: Vec<String> = args
+    let case_insensitive_paths: HashSet<String> = args
         .get_many::<String>("args")
         .unwrap()
         .map(|s| s.to_string().to_ascii_lowercase())
         .collect();
-    let case_insensitive_paths: HashSet<String> =
-        paths.into_iter().map(|s| s.to_lowercase()).collect();
 
     let entries = fs::read_dir(&templates_dir)
         .unwrap_or_else(|_| panic!("Failed to read templates directory"));
@@ -71,8 +69,8 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
 
     for path in expanded_paths {
         let file_name = path.split('/').last().unwrap();
-        let dest_path = format!("{}/{}", gctx.cwd().to_string_lossy().to_string(), file_name);
-        if let Err(_) = fs::copy(&path, &dest_path) {
+        let dest_path = format!("{}/{}", gctx.cwd().to_string_lossy(), file_name);
+        if fs::copy(&path, &dest_path).is_err() {
             println!("Failed to copy template file to destination: {}", dest_path);
         } else {
             println!("Generated template file: {}", file_name);
