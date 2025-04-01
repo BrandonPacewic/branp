@@ -32,6 +32,10 @@ compiles down into a single binary, you can manually move it wherever you want.
 
 ## Usage
 
+Basic usage can be provided by simply running `branp` in your terminal with no arguments. This will
+give you a list of all available subcommands. A more comprehensive list of all available subcommands
+and their use cases is a work in progress.
+
 ## Milestones
 
 `branp` is very much a work in progress. The following is a list of goals I have for the project, in
