@@ -99,6 +99,14 @@ impl Shell {
         self.print(Some(&message));
     }
 
+    pub fn warn<T: fmt::Display>(&mut self, message: T) {
+        self.print(Some(&message));
+    }
+
+    pub fn error<T: fmt::Display>(&mut self, message: T) {
+        self.print(Some(&message));
+    }
+
     pub fn set_verbosity(&mut self, verbosity: Verbosity) {
         self.verbosity = verbosity;
     }

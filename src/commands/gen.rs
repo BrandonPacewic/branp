@@ -63,7 +63,8 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
         .collect();
 
     if expanded_paths.is_empty() {
-        println!("No templates found for the given file(s) / directory(s)");
+        gctx.shell()
+            .warn("No templates found for the given file(s) / directory(s)");
         return;
     }
 
@@ -71,9 +72,13 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
         let file_name = path.split('/').last().unwrap();
         let dest_path = format!("{}/{}", gctx.cwd().to_string_lossy(), file_name);
         if fs::copy(&path, &dest_path).is_err() {
-            println!("Failed to copy template file to destination: {}", dest_path);
+            gctx.shell().error(format!(
+                "Failed to copy template file ({}) destination {}",
+                path, dest_path
+            ));
         } else {
-            println!("Generated template file: {}", file_name);
+            gctx.shell()
+                .note(format!("Generated template file: {}", file_name));
         }
     }
 }

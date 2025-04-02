@@ -16,7 +16,7 @@ pub fn command() -> Command {
         )
 }
 
-pub fn exec(_gctx: &mut GlobalContext, args: &ArgMatches) {
+pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
     let file = match args.get_one::<String>("file") {
         Some(val) => val.clone(),
         None => {
@@ -31,7 +31,7 @@ pub fn exec(_gctx: &mut GlobalContext, args: &ArgMatches) {
     };
 
     if !Path::new(&file).exists() {
-        eprintln!("{} file not found.", file);
+        gctx.shell().error(format!("{} file not found.", file));
         return;
     }
 
@@ -49,8 +49,10 @@ pub fn exec(_gctx: &mut GlobalContext, args: &ArgMatches) {
     }
 
     let duration = start_time.elapsed();
-    println!("Successfully compiled in {:?}", duration);
-    println!("--------------------");
+    gctx.shell().note(format!(
+        "Successfully compiled in {}s\n--------------------",
+        duration.as_secs_f32()
+    ));
 
     let _ = ProcessCommand::new("./a.out")
         .status()

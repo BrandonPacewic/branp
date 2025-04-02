@@ -12,7 +12,6 @@ mod version;
 
 fn main() {
     let args = branp().try_get_matches().unwrap();
-    let (expanded_args, global_args) = expand_aliases(args, vec![]).unwrap();
     let mut gctx = match GlobalContext::default() {
         Some(gctx) => gctx,
         None => {
@@ -20,6 +19,7 @@ fn main() {
         }
     };
 
+    let (expanded_args, global_args) = expand_aliases(&mut gctx, args, vec![]).unwrap();
     let is_verbose = expanded_args.get_count("verbose") > 0;
 
     if expanded_args.get_flag("version") {
@@ -50,6 +50,8 @@ impl Exec {
         if let Some(exec) = commands::branp_exec(cmd) {
             Self::Branp(exec)
         } else {
+            // Until branp supports colored logging and exiting outside of simply halting the program
+            // this will be left here. Once status printing is improved this will be removed.
             color_print::cprintln!(
                 "<red,bold>error</>: <yellow>{}</> is not a valid subcommand",
                 cmd
@@ -92,6 +94,7 @@ impl GlobalArgs {
 }
 
 fn expand_aliases(
+    gctx: &mut GlobalContext,
     args: ArgMatches,
     mut already_expanded: Vec<String>,
 ) -> Option<(ArgMatches, GlobalArgs)> {
@@ -102,10 +105,10 @@ fn expand_aliases(
         match (exec, aliased_cmd) {
             (Some(_), Some(_)) => {
                 // User alias conflicts with built-in subcommand.
-                println!(
+                gctx.shell().warn(format!(
                     "user-defined alias `{}` is ignored as it conflicts with a built-in subcommand",
                     cmd
-                );
+                ));
             }
             (Some(_), None) => {} // Found a subcommand with no overlapping alias, do nothing.
             // Not a subcommand and not an alias, an error but not for the responsibility of this function.
@@ -139,7 +142,7 @@ fn expand_aliases(
                     panic!("subcommand alias `{}` is recursive", cmd);
                 }
 
-                let (expanded_args, _) = expand_aliases(new_args, already_expanded)?;
+                let (expanded_args, _) = expand_aliases(gctx, new_args, already_expanded)?;
                 return Some((expanded_args, global_args));
             }
         }
