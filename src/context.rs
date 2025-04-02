@@ -4,8 +4,11 @@ use std::path::PathBuf;
 use std::{env, io};
 
 pub struct GlobalContext {
+    /// [`PathBuf`] to the user's home directory at runtime.
     home_path: PathBuf,
+    /// [`Shell`] instance for console output.
     shell: Shell,
+    /// [`PathBuf`] to the current working directory at runtime.
     cwd: PathBuf,
 }
 
@@ -25,9 +28,21 @@ impl GlobalContext {
         Some(Self::new(shell, cwd, PathBuf::from(homedir)))
     }
 
-    pub fn configure(&mut self, _verbose: u32, _quiet: bool) {
-        // Not doing anything with quiet for now. This will be expanded in the future when more things
-        // need to be configurable.
+    pub fn configure(&mut self, verbose: u32, quiet: bool) {
+        let _extra_verbose = verbose >= 2;
+        let verbose = verbose > 0;
+        let verbosity = match (verbose, quiet) {
+            // In the future this should provide a callback and return with this error message as
+            // a result. This is a totally normal thing that can happen so it should not
+            // crash the program.
+            (true, true) => panic!("cannot set both --verbose and --quiet"),
+            (true, false) => Verbosity::Verbose,
+            (false, true) => Verbosity::Quiet,
+            // In the future this should attempt to source the default verbosity from a configuration
+            // file, this is not yet supported so we default to normal verbosity (i.e. verbose).
+            (false, false) => Verbosity::Verbose,
+        };
+        self.shell().set_verbosity(verbosity);
     }
 
     pub fn home(&self) -> &PathBuf {
@@ -82,6 +97,10 @@ impl Shell {
 
     pub fn note<T: fmt::Display>(&mut self, message: T) {
         self.print(Some(&message));
+    }
+
+    pub fn set_verbosity(&mut self, verbosity: Verbosity) {
+        self.verbosity = verbosity;
     }
 }
 
