@@ -1,10 +1,14 @@
-# branp
-
+<h1>
 <p align="center">
-    <a href="#about">About</a> •
-    <a href="#install">Install</a> •
-    <a href="#usage">Usage</a> •
-    <a href="#Milestones">Milestones</a>
+  <img src="https://github.com/user-attachments/assets/2a8bcb43-90bd-4443-89b7-ecd91b2f7806" alt="Logo" width="256">
+  <br>branp
+</h1>
+    <p align="center">
+        <a href="#about">About</a> •
+        <a href="#install">Install</a> •
+        <a href="#usage">Usage</a> •
+        <a href="#Milestones">Milestones</a>
+    </p>
 </p>
 
 ## About
