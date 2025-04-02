@@ -1,3 +1,21 @@
+//! `format` subcommand.
+//! 
+//! This command is used to format a given directory with a supported auto formatter.
+//! Example:
+//! ```bash
+//! $ bp format
+//! ```
+//! branp will format all files in the current directory and its subdirectories that
+//! it possibly can. Skipping over files that do not have a supported auto formatter for
+//! their respective file extension.
+//! 
+//! If the auto formatter you want to call has a configuration file, you can specify it with
+//! the `--config` flag. This can also be used to specify a custom configuration file that
+//! you have saved inside of `<config dir>/branp/format`.
+//! Example:
+//! ```bash
+//! $ bp format --config <config>
+
 use clap::{Arg, ArgMatches, Command};
 use std::fs;
 use std::path::{Path, PathBuf};
