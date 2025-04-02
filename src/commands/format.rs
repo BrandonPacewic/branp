@@ -15,6 +15,7 @@
 //! Example:
 //! ```bash
 //! $ bp format --config <config>
+//! ```
 
 use clap::{Arg, ArgMatches, Command};
 use std::fs;
