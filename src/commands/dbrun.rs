@@ -19,8 +19,11 @@ pub fn command() -> Command {
 pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
     let file = match args.get_one::<String>("file") {
         Some(val) => val.clone(),
-        None => { return; }
+        None => { 
+            return;
+        }
     };
+
 
     let file = if !file.ends_with(".cpp") {
         format!("{}.cpp", file)
