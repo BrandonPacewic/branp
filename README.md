@@ -1,6 +1,6 @@
 <h1>
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/2a8bcb43-90bd-4443-89b7-ecd91b2f7806" alt="Logo" width="128">
+  <img src="https://github.com/user-attachments/assets/2a8bcb43-90bd-4443-89b7-ecd91b2f7806" alt="Logo" width="256">
   <br>branp
 </h1>
     <p align="center">
