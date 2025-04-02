@@ -51,10 +51,16 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
         let output = command.output();
         if let Ok(output) = output {
             if !output.status.success() {
-                eprintln!("Error formatting file: {:?}", file);
+                gctx.shell().error(format!(
+                    "Failed to format file: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
             }
         } else {
-            eprintln!("Failed to execute clang-format for file: {:?}", file);
+            gctx.shell().error(format!(
+                "Failed to execute clang-format for file: {}",
+                file.display()
+            ));
         }
     }
 
@@ -90,8 +96,11 @@ fn get_clang_format_config(gctx: &mut GlobalContext, args: &ArgMatches) -> Optio
         .map(|(path, _)| path.to_string_lossy().into_owned());
 
     if config_file.is_none() {
-        println!("No config file found for {}", config);
-        print!("Defaulting to no config");
+        gctx.shell().warn(format!(
+            "No config file found for {}. Available configs: {:?}",
+            config, config_names
+        ));
+        return None;
     }
 
     config_file
