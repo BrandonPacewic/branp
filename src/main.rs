@@ -50,6 +50,8 @@ impl Exec {
         if let Some(exec) = commands::branp_exec(cmd) {
             Self::Branp(exec)
         } else {
+            // Until branp supports colored logging and exiting outside of simply halting the program
+            // this will be left here. Once status printing is improved this will be removed.
             color_print::cprintln!(
                 "<red,bold>error</>: <yellow>{}</> is not a valid subcommand",
                 cmd
