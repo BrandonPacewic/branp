@@ -1,5 +1,5 @@
 //! `format` subcommand.
-//! 
+//!
 //! This command is used to format a given directory with a supported auto formatter.
 //! Example:
 //! ```bash
@@ -8,7 +8,7 @@
 //! branp will format all files in the current directory and its subdirectories that
 //! it possibly can. Skipping over files that do not have a supported auto formatter for
 //! their respective file extension.
-//! 
+//!
 //! If the auto formatter you want to call has a configuration file, you can specify it with
 //! the `--config` flag. This can also be used to specify a custom configuration file that
 //! you have saved inside of `<config dir>/branp/format`.
@@ -39,6 +39,10 @@ pub fn command() -> Command {
         )
 }
 
+/// Tag for a collection of files and their respective supported formatter.
+/// 
+/// This struct contains a reference to the globally defined [`CodeFormatter`]
+/// and a vector of [`PathBuf`]s that represent the files that are to be formatted.
 struct FormatCollection<'a> {
     files: Vec<PathBuf>,
     formatter: &'a CodeFormatter,
