@@ -77,6 +77,12 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
     gctx.shell().note("Done!");
 }
 
+/// Generate a list of files 'tagged' with their respective formatters ([`CodeFormatter`]).
+/// 
+/// This function recursively traverses the directory tree starting from the given
+/// `entries` and collects files that are associated with a specific formatter.
+/// 
+/// Each [`CodeFormatter`] is simply a pointer to the global static definition of the formatter.
 fn get_formatters(
     entries: fs::ReadDir,
     mut formatters: Vec<FormatCollection>,
@@ -105,6 +111,13 @@ fn get_formatters(
     formatters
 }
 
+/// Get the clang-format config file from the command line arguments.
+/// 
+/// Currently the only formatter that supports a config file is `clang-format`.
+/// i.e. [`get_clang_format_config`].
+/// 
+/// As this expands in the future, with more formatters that support a configuration file,
+/// a new method of handling this logic needs to be implemented.
 fn get_clang_format_config(gctx: &mut GlobalContext, args: &ArgMatches) -> Option<String> {
     let config = args.get_one::<String>("config")?;
     let config_dir = Path::new(&gctx.home()).join(".config/branp/format");
@@ -144,12 +157,14 @@ fn get_clang_format_config(gctx: &mut GlobalContext, args: &ArgMatches) -> Optio
     config_file
 }
 
+/// A static representation of a formatter.
 struct CodeFormatter {
     name: &'static str,
     valid_extensions: &'static [&'static str],
     runner: fn(&PathBuf, &Option<String>) -> ProcessCommand,
 }
 
+/// Command: `clang-format -i --style=<file,config> <file>`
 fn clang_format_command(file: &PathBuf, config: &Option<String>) -> ProcessCommand {
     let mut command = ProcessCommand::new("clang-format");
     command.arg("-i");
@@ -163,12 +178,15 @@ fn clang_format_command(file: &PathBuf, config: &Option<String>) -> ProcessComma
     command
 }
 
+// For more information about the clang-format auto formatter visit:
+// https://clang.llvm.org/docs/ClangFormat.html
 const CLANG: CodeFormatter = CodeFormatter {
     name: "clang-format",
     valid_extensions: &["cpp", "h", "cc", "hpp", "cxx", "c", "cs"],
     runner: clang_format_command,
 };
 
+/// Command: `autopep8 --in-place --max-line-length 120 --aggressive --aggressive <file>`
 fn autopep8_format_command(file: &PathBuf, _config: &Option<String>) -> ProcessCommand {
     // Note that pep8autoformat does not accept a configuration file.
     // In the future customization to this particular call should be done via
@@ -183,6 +201,8 @@ fn autopep8_format_command(file: &PathBuf, _config: &Option<String>) -> ProcessC
     command
 }
 
+// For more information about the autopep8 auto formatter visit:
+// https://pypi.org/project/autopep8/
 const AUTOPEP8: CodeFormatter = CodeFormatter {
     name: "autopep8",
     valid_extensions: &["py"],
