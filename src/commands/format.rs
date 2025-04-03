@@ -40,7 +40,7 @@ pub fn command() -> Command {
 }
 
 /// Tag for a collection of files and their respective supported formatter.
-/// 
+///
 /// This struct contains a reference to the globally defined [`CodeFormatter`]
 /// and a vector of [`PathBuf`]s that represent the files that are to be formatted.
 struct FormatCollection<'a> {
@@ -48,9 +48,10 @@ struct FormatCollection<'a> {
     formatter: &'a CodeFormatter,
 }
 
-pub fn exec(gctx: &mut GlobalContext, _args: &ArgMatches) {
+pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
     let entries = fs::read_dir(".").unwrap_or_else(|_| panic!("Failed to read current directory"));
     let formatters = get_formatters(entries, vec![]);
+    let config = get_clang_format_config(gctx, args);
 
     for fc in formatters {
         gctx.shell().note(format!(
@@ -59,7 +60,7 @@ pub fn exec(gctx: &mut GlobalContext, _args: &ArgMatches) {
             fc.formatter.name
         ));
         for file in fc.files {
-            let mut command = (fc.formatter.runner)(&file, None);
+            let mut command = (fc.formatter.runner)(&file, &config);
             let output = command.output().unwrap_or_else(|_| {
                 panic!("Failed to execute formatter for file: {}", file.display())
             });
@@ -146,10 +147,10 @@ fn get_clang_format_config(gctx: &mut GlobalContext, args: &ArgMatches) -> Optio
 struct CodeFormatter {
     name: &'static str,
     valid_extensions: &'static [&'static str],
-    runner: fn(&PathBuf, Option<String>) -> ProcessCommand,
+    runner: fn(&PathBuf, &Option<String>) -> ProcessCommand,
 }
 
-fn clang_format_command(file: &PathBuf, config: Option<String>) -> ProcessCommand {
+fn clang_format_command(file: &PathBuf, config: &Option<String>) -> ProcessCommand {
     let mut command = ProcessCommand::new("clang-format");
     command.arg("-i");
     if let Some(config) = config {
@@ -168,7 +169,7 @@ const CLANG: CodeFormatter = CodeFormatter {
     runner: clang_format_command,
 };
 
-fn autopep8_format_command(file: &PathBuf, _config: Option<String>) -> ProcessCommand {
+fn autopep8_format_command(file: &PathBuf, _config: &Option<String>) -> ProcessCommand {
     // Note that pep8autoformat does not accept a configuration file.
     // In the future customization to this particular call should be done via
     // the global context.
