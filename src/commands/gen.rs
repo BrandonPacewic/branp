@@ -69,7 +69,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
     }
 
     for path in expanded_paths {
-        let file_name = path.split('/').last().unwrap();
+        let file_name = path.split('/').next_back().unwrap();
         let dest_path = format!("{}/{}", gctx.cwd().to_string_lossy(), file_name);
         if fs::copy(&path, &dest_path).is_err() {
             gctx.shell().error(format!(
