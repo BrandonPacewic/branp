@@ -168,7 +168,27 @@ const CLANG: CodeFormatter = CodeFormatter {
     runner: clang_format_command,
 };
 
-const FORMATTERS: [CodeFormatter; 1] = [CLANG];
+fn autopep8_format_command(file: &PathBuf, _config: Option<String>) -> ProcessCommand {
+    // Note that pep8autoformat does not accept a configuration file.
+    // In the future customization to this particular call should be done via
+    // the global context.
+    let mut command = ProcessCommand::new("autopep8");
+    command.arg("--in-place");
+    command.arg("--max-line-length");
+    command.arg("120");
+    command.arg("--aggressive");
+    command.arg("--aggressive");
+    command.arg(file);
+    command
+}
+
+const AUTOPEP8: CodeFormatter = CodeFormatter {
+    name: "autopep8",
+    valid_extensions: &["py"],
+    runner: autopep8_format_command,
+};
+
+const FORMATTERS: [CodeFormatter; 2] = [CLANG, AUTOPEP8];
 
 fn get_code_formatter(file: &PathBuf) -> Option<&'static CodeFormatter> {
     let ext = file.extension()?.to_str()?;
