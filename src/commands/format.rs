@@ -1,11 +1,28 @@
+//! `format` subcommand.
+//!
+//! This command is used to format a given directory with a supported auto formatter.
+//! Example:
+//! ```bash
+//! $ bp format
+//! ```
+//! branp will format all files in the current directory and its subdirectories that
+//! it possibly can. Skipping over files that do not have a supported auto formatter for
+//! their respective file extension.
+//!
+//! If the auto formatter you want to call has a configuration file, you can specify it with
+//! the `--config` flag. This can also be used to specify a custom configuration file that
+//! you have saved inside of `<config dir>/branp/format`.
+//! Example:
+//! ```bash
+//! $ bp format --config <config>
+//! ```
+
 use clap::{Arg, ArgMatches, Command};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use crate::context::GlobalContext;
-
-const FILE_TARGETS: [&str; 7] = ["cpp", "h", "cc", "hpp", "cxx", "c", "cs"];
 
 pub fn command() -> Command {
     Command::new("format")
@@ -22,51 +39,85 @@ pub fn command() -> Command {
         )
 }
 
+/// Tag for a collection of files and their respective supported formatter.
+///
+/// This struct contains a reference to the globally defined [`CodeFormatter`]
+/// and a vector of [`PathBuf`]s that represent the files that are to be formatted.
+struct FormatCollection<'a> {
+    files: Vec<PathBuf>,
+    formatter: &'a CodeFormatter,
+}
+
 pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
-    gctx.shell().note("Indexing...");
-
+    let entries = fs::read_dir(".").unwrap_or_else(|_| panic!("Failed to read current directory"));
+    let formatters = get_formatters(entries, vec![]);
     let config = get_clang_format_config(gctx, args);
-    let mut files: Vec<PathBuf> = Vec::new();
-    let paths = vec![PathBuf::from(".")];
 
-    for path in paths {
-        if path.is_dir() {
-            walk_directory_for_files(&path, &mut files);
-        }
-    }
+    for fc in formatters {
+        gctx.shell().note(format!(
+            "Formatting {} file(s) with {}...",
+            fc.files.len(),
+            fc.formatter.name
+        ));
+        for file in fc.files {
+            let mut command = (fc.formatter.runner)(&file, &config);
+            let output = command.output().unwrap_or_else(|_| {
+                panic!("Failed to execute formatter for file: {}", file.display())
+            });
 
-    gctx.shell()
-        .note(format!("Formatting {} file(s)...", files.len()));
-
-    for file in files {
-        let mut command = ProcessCommand::new("clang-format");
-        command.arg("-i");
-        if let Some(config) = &config {
-            command.arg(format!("--style=file:{}", config));
-        } else {
-            command.arg("--style=file");
-        }
-
-        command.arg(&file);
-        let output = command.output();
-        if let Ok(output) = output {
             if !output.status.success() {
                 gctx.shell().error(format!(
                     "Failed to format file: {}",
                     String::from_utf8_lossy(&output.stderr)
                 ));
             }
-        } else {
-            gctx.shell().error(format!(
-                "Failed to execute clang-format for file: {}",
-                file.display()
-            ));
         }
     }
 
     gctx.shell().note("Done!");
 }
 
+/// Generate a list of files 'tagged' with their respective formatters ([`CodeFormatter`]).
+///
+/// This function recursively traverses the directory tree starting from the given
+/// `entries` and collects files that are associated with a specific formatter.
+///
+/// Each [`CodeFormatter`] is simply a pointer to the global static definition of the formatter.
+fn get_formatters(
+    entries: fs::ReadDir,
+    mut formatters: Vec<FormatCollection>,
+) -> Vec<FormatCollection> {
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if path.is_dir() {
+            let sub_entries =
+                fs::read_dir(&path).unwrap_or_else(|_| panic!("Failed to read directory"));
+            formatters = get_formatters(sub_entries, formatters);
+        } else if let Some(formatter) = get_code_formatter(&path) {
+            if let Some(created_formatter) = formatters
+                .iter_mut()
+                .find(|f| f.formatter.name == formatter.name)
+            {
+                created_formatter.files.push(path);
+            } else {
+                formatters.push(FormatCollection {
+                    files: vec![path],
+                    formatter,
+                });
+            }
+        }
+    }
+
+    formatters
+}
+
+/// Get the clang-format config file from the command line arguments.
+///
+/// Currently the only formatter that supports a config file is `clang-format`.
+/// i.e. [`get_clang_format_config`].
+///
+/// As this expands in the future, with more formatters that support a configuration file,
+/// a new method of handling this logic needs to be implemented.
 fn get_clang_format_config(gctx: &mut GlobalContext, args: &ArgMatches) -> Option<String> {
     let config = args.get_one::<String>("config")?;
     let config_dir = Path::new(&gctx.home()).join(".config/branp/format");
@@ -106,17 +157,64 @@ fn get_clang_format_config(gctx: &mut GlobalContext, args: &ArgMatches) -> Optio
     config_file
 }
 
-fn walk_directory_for_files(dir: &Path, files: &mut Vec<PathBuf>) {
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.filter_map(Result::ok) {
-            let path = entry.path();
-            if path.is_dir() {
-                walk_directory_for_files(&path, files);
-            } else if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-                if FILE_TARGETS.contains(&ext) {
-                    files.push(path);
-                }
-            }
-        }
+/// A static representation of a formatter.
+struct CodeFormatter {
+    name: &'static str,
+    valid_extensions: &'static [&'static str],
+    runner: fn(&PathBuf, &Option<String>) -> ProcessCommand,
+}
+
+/// Command: `clang-format -i --style=<file,config> <file>`
+fn clang_format_command(file: &PathBuf, config: &Option<String>) -> ProcessCommand {
+    let mut command = ProcessCommand::new("clang-format");
+    command.arg("-i");
+    if let Some(config) = config {
+        command.arg(format!("--style=file:{}", config));
+    } else {
+        command.arg("--style=file");
     }
+
+    command.arg(file);
+    command
+}
+
+// For more information about the clang-format auto formatter visit:
+// https://clang.llvm.org/docs/ClangFormat.html
+const CLANG: CodeFormatter = CodeFormatter {
+    name: "clang-format",
+    valid_extensions: &["cpp", "h", "cc", "hpp", "cxx", "c", "cs"],
+    runner: clang_format_command,
+};
+
+/// Command: `autopep8 --in-place --max-line-length 120 --aggressive --aggressive <file>`
+fn autopep8_format_command(file: &PathBuf, _config: &Option<String>) -> ProcessCommand {
+    // Note that pep8autoformat does not accept a configuration file.
+    // In the future customization to this particular call should be done via
+    // the global context.
+    let mut command = ProcessCommand::new("autopep8");
+    command.arg("--in-place");
+    command.arg("--max-line-length");
+    command.arg("120");
+    command.arg("--aggressive");
+    command.arg("--aggressive");
+    command.arg(file);
+    command
+}
+
+// For more information about the autopep8 auto formatter visit:
+// https://pypi.org/project/autopep8/
+const AUTOPEP8: CodeFormatter = CodeFormatter {
+    name: "autopep8",
+    valid_extensions: &["py"],
+    runner: autopep8_format_command,
+};
+
+const FORMATTERS: [&CodeFormatter; 2] = [&CLANG, &AUTOPEP8];
+
+fn get_code_formatter(file: &Path) -> Option<&'static CodeFormatter> {
+    let ext = file.extension()?.to_str()?;
+    FORMATTERS
+        .iter()
+        .copied() // Dereference `&&'static CodeFormatter` to `&'static CodeFormatter`
+        .find(|formatter| formatter.valid_extensions.contains(&ext))
 }
