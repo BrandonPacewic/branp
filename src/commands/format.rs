@@ -209,11 +209,12 @@ const AUTOPEP8: CodeFormatter = CodeFormatter {
     runner: autopep8_format_command,
 };
 
-const FORMATTERS: [CodeFormatter; 2] = [CLANG, AUTOPEP8];
+const FORMATTERS: [&CodeFormatter; 2] = [&CLANG, &AUTOPEP8];
 
 fn get_code_formatter(file: &PathBuf) -> Option<&'static CodeFormatter> {
     let ext = file.extension()?.to_str()?;
     FORMATTERS
         .iter()
+        .copied() // Dereference `&&'static CodeFormatter` to `&'static CodeFormatter`
         .find(|formatter| formatter.valid_extensions.contains(&ext))
 }
