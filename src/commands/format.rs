@@ -211,7 +211,7 @@ const AUTOPEP8: CodeFormatter = CodeFormatter {
 
 const FORMATTERS: [&CodeFormatter; 2] = [&CLANG, &AUTOPEP8];
 
-fn get_code_formatter(file: &PathBuf) -> Option<&'static CodeFormatter> {
+fn get_code_formatter(file: &Path) -> Option<&'static CodeFormatter> {
     let ext = file.extension()?.to_str()?;
     FORMATTERS
         .iter()
