@@ -78,10 +78,10 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
 }
 
 /// Generate a list of files 'tagged' with their respective formatters ([`CodeFormatter`]).
-/// 
+///
 /// This function recursively traverses the directory tree starting from the given
 /// `entries` and collects files that are associated with a specific formatter.
-/// 
+///
 /// Each [`CodeFormatter`] is simply a pointer to the global static definition of the formatter.
 fn get_formatters(
     entries: fs::ReadDir,
@@ -112,10 +112,10 @@ fn get_formatters(
 }
 
 /// Get the clang-format config file from the command line arguments.
-/// 
+///
 /// Currently the only formatter that supports a config file is `clang-format`.
 /// i.e. [`get_clang_format_config`].
-/// 
+///
 /// As this expands in the future, with more formatters that support a configuration file,
 /// a new method of handling this logic needs to be implemented.
 fn get_clang_format_config(gctx: &mut GlobalContext, args: &ArgMatches) -> Option<String> {
