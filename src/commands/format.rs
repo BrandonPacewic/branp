@@ -43,9 +43,9 @@ pub fn command() -> Command {
 ///
 /// This struct contains a reference to the globally defined [`CodeFormatter`]
 /// and a vector of [`PathBuf`]s that represent the files that are to be formatted.
-struct FormatCollection<'a> {
+struct FormatCollection {
     files: Vec<PathBuf>,
-    formatter: &'a CodeFormatter,
+    formatter: &'static CodeFormatter,
 }
 
 pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
