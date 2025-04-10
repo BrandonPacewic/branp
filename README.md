@@ -19,7 +19,7 @@ used in production at any large scale. That being said, if you find use for it, 
 
 ## Install
 
-Currently, `branp` is not available on any package manager or through a weget-like command. Only
+Currently, `branp` is not available on any package manager or through a wget-like command. Only
 supports a manual install. This is something that will change in the future, part of this tool is
 fast configuration on new machines and having many streamlined methods of quickly installing it
 is a necessity. 
