@@ -1,15 +1,8 @@
 name: Rust Linting
 on:
-  push:
-    paths:
-      - '**/*.rs'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
   pull_request:
-    paths:
-      - '**/*.rs'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
+    branches:
+      - mega
 jobs:
   lint:
     runs-on: ubuntu-latest
