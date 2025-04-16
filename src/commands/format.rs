@@ -16,8 +16,15 @@
 //! ```bash
 //! $ bp format --config <config>
 //! ```
+//!
+//! By default branp will not include submodules in the formatting process.
+//! This can be manually enabled with `--include-submodules`.
+//! Example:
+//! ```bash
+//! $ bp format --include-submodules
+//! ```
 
-use clap::{Arg, ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -37,6 +44,15 @@ pub fn command() -> Command {
                 )
                 .required(false),
         )
+        .arg(
+            Arg::new("include-submodules")
+                .short('s')
+                .long("include-submodules")
+                .help("Include submodules in the formatting process")
+                .long_help("branp will recursively include submodules in the formatting process")
+                .action(ArgAction::SetTrue)
+                .required(false),
+        )
 }
 
 /// Tag for a collection of files and their respective supported formatter.
@@ -49,8 +65,10 @@ struct FormatCollection {
 }
 
 pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
+    let include_submodules = args.get_flag("include-submodules");
+
     let entries = fs::read_dir(".").unwrap_or_else(|_| panic!("Failed to read current directory"));
-    let formatters = get_formatters(entries, vec![]);
+    let formatters = get_formatters(entries, vec![], include_submodules);
     let config = get_clang_format_config(gctx, args);
 
     for fc in formatters {
@@ -86,13 +104,18 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
 fn get_formatters(
     entries: fs::ReadDir,
     mut formatters: Vec<FormatCollection>,
+    include_submodules: bool,
 ) -> Vec<FormatCollection> {
     for entry in entries.filter_map(Result::ok) {
         let path = entry.path();
         if path.is_dir() {
+            if !include_submodules && is_git_dir(path.as_path()) {
+                continue;
+            }
+
             let sub_entries =
                 fs::read_dir(&path).unwrap_or_else(|_| panic!("Failed to read directory"));
-            formatters = get_formatters(sub_entries, formatters);
+            formatters = get_formatters(sub_entries, formatters, include_submodules);
         } else if let Some(formatter) = get_code_formatter(&path) {
             if let Some(created_formatter) = formatters
                 .iter_mut()
@@ -109,6 +132,13 @@ fn get_formatters(
     }
 
     formatters
+}
+
+/// Checks if the given path slice is a git directory.
+///
+/// This is done on the basis of the presence of a `.git` directory.
+fn is_git_dir(path: &Path) -> bool {
+    path.join(".git").exists()
 }
 
 /// Get the clang-format config file from the command line arguments.
