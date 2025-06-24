@@ -67,8 +67,11 @@ impl Exec {
     }
 }
 
-const BUILTIN_ALIASES: [(&str, &str, &str); 2] =
-    [("f", "format", "alias: format"), ("g", "gen", "alias: gen")];
+const BUILTIN_ALIASES: [(&str, &str, &str); 3] = [
+    ("f", "format", "alias: format"),
+    ("g", "git", "alias: git"),
+    ("r", "dbrun", "alias: dbrun"),
+];
 
 fn builtin_aliases_execs(cmd: &str) -> Option<&(&str, &str, &str)> {
     BUILTIN_ALIASES.iter().find(|alias| alias.0 == cmd)
@@ -195,7 +198,8 @@ fn branp() -> Command {
 
 <green,bold>Commands:</>
     <cyan,bold>format</>, <cyan,bold>f</>       Format the current working directory
-    <cyan,bold>dbrun</>           Run a standalone C++ code file
+    <cyan,bold>git</>, <cyan,bold>g</>          Git-related commands
+    <cyan,bold>dbrun</>, <cyan,bold>r</>        Run a standalone C++ code file
     <cyan,bold>template-gen</>    Generate test case files for a given file name"
         ))
         .arg(
