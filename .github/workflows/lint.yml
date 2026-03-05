@@ -13,8 +13,5 @@ jobs:
       - name: Install Rust toolchain
         run: rustup install stable && rustup component add clippy rustfmt
 
-      - name: Run cargo fmt
-        run: cargo fmt --all -- --check
-
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run lint
+        run: bash scripts/lint.sh
