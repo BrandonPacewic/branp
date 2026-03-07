@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use crate::context::GlobalContext;
+use crate::errors::{CliError, CliResult};
 
 pub fn command() -> Command {
     Command::new("format")
@@ -64,11 +65,11 @@ struct FormatCollection {
     formatter: &'static CodeFormatter,
 }
 
-pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
+pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let include_submodules = args.get_flag("include-submodules");
 
-    let entries = fs::read_dir(".").unwrap_or_else(|_| panic!("Failed to read current directory"));
-    let formatters = get_formatters(entries, vec![], include_submodules);
+    let entries = fs::read_dir(".")?;
+    let formatters = get_formatters(entries, vec![], include_submodules)?;
     let config = get_clang_format_config(gctx, args);
 
     for fc in formatters {
@@ -79,9 +80,12 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
         ));
         for file in fc.files {
             let mut command = (fc.formatter.runner)(&file, &config);
-            let output = command.output().unwrap_or_else(|_| {
-                panic!("Failed to execute formatter for file: {}", file.display())
-            });
+            let output = command.output().map_err(|e| {
+                CliError::new(
+                    format!("failed to run formatter on {}: {}", file.display(), e),
+                    1,
+                )
+            })?;
 
             if !output.status.success() {
                 gctx.shell().error(format!(
@@ -93,6 +97,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
     }
 
     gctx.shell().note("Done!");
+    Ok(())
 }
 
 /// Generate a list of files 'tagged' with their respective formatters ([`CodeFormatter`]).
@@ -105,7 +110,7 @@ fn get_formatters(
     entries: fs::ReadDir,
     mut formatters: Vec<FormatCollection>,
     include_submodules: bool,
-) -> Vec<FormatCollection> {
+) -> Result<Vec<FormatCollection>, CliError> {
     for entry in entries.filter_map(Result::ok) {
         let path = entry.path();
         if path.is_dir() {
@@ -113,9 +118,8 @@ fn get_formatters(
                 continue;
             }
 
-            let sub_entries =
-                fs::read_dir(&path).unwrap_or_else(|_| panic!("Failed to read directory"));
-            formatters = get_formatters(sub_entries, formatters, include_submodules);
+            let sub_entries = fs::read_dir(&path)?;
+            formatters = get_formatters(sub_entries, formatters, include_submodules)?;
         } else if let Some(formatter) = get_code_formatter(&path) {
             if let Some(created_formatter) = formatters
                 .iter_mut()
@@ -131,7 +135,7 @@ fn get_formatters(
         }
     }
 
-    formatters
+    Ok(formatters)
 }
 
 /// Checks if the given path slice is a git directory.

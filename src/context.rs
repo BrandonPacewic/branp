@@ -3,6 +3,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::{env, io};
 
+use crate::errors::{CliError, CliResult};
+
 pub struct GlobalContext {
     /// [`PathBuf`] to the user's home directory at runtime.
     home_path: PathBuf,
@@ -21,21 +23,19 @@ impl GlobalContext {
         }
     }
 
-    pub fn default() -> Option<Self> {
+    pub fn default() -> Result<Self, CliError> {
         let shell = Shell::new();
-        let homedir = env::var("HOME").expect("HOME environment variable not set.");
-        let cwd = env::current_dir().expect("Failed to get current directory.");
-        Some(Self::new(shell, cwd, PathBuf::from(homedir)))
+        let homedir =
+            env::var("HOME").map_err(|_| CliError::from("HOME environment variable not set"))?;
+        let cwd = env::current_dir()?;
+        Ok(Self::new(shell, cwd, PathBuf::from(homedir)))
     }
 
-    pub fn configure(&mut self, verbose: u32, quiet: bool) {
+    pub fn configure(&mut self, verbose: u32, quiet: bool) -> CliResult {
         let _extra_verbose = verbose >= 2;
         let verbose = verbose > 0;
         let verbosity = match (verbose, quiet) {
-            // In the future this should provide a callback and return with this error message as
-            // a result. This is a totally normal thing that can happen so it should not
-            // crash the program.
-            (true, true) => panic!("cannot set both --verbose and --quiet"),
+            (true, true) => return Err(CliError::from("cannot set both --verbose and --quiet")),
             (true, false) => Verbosity::Verbose,
             (false, true) => Verbosity::Quiet,
             // In the future this should attempt to source the default verbosity from a configuration
@@ -43,6 +43,7 @@ impl GlobalContext {
             (false, false) => Verbosity::Verbose,
         };
         self.shell().set_verbosity(verbosity);
+        Ok(())
     }
 
     pub fn home(&self) -> &PathBuf {
@@ -100,11 +101,17 @@ impl Shell {
     }
 
     pub fn warn<T: fmt::Display>(&mut self, message: T) {
-        self.print(Some(&message));
+        eprintln!(
+            "{}",
+            color_print::cformat!("<yellow,bold>warning</>: {}", message)
+        );
     }
 
     pub fn error<T: fmt::Display>(&mut self, message: T) {
-        self.print(Some(&message));
+        eprintln!(
+            "{}",
+            color_print::cformat!("<red,bold>error</>: {}", message)
+        );
     }
 
     pub fn set_verbosity(&mut self, verbosity: Verbosity) {

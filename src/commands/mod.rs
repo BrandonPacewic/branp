@@ -1,6 +1,7 @@
 use clap::{ArgMatches, Command};
 
 use crate::context::GlobalContext;
+use crate::errors::CliResult;
 
 pub fn branp() -> Vec<Command> {
     vec![
@@ -12,7 +13,7 @@ pub fn branp() -> Vec<Command> {
     ]
 }
 
-pub type Exec = fn(&mut GlobalContext, &ArgMatches);
+pub type Exec = fn(&mut GlobalContext, &ArgMatches) -> CliResult;
 
 pub fn branp_exec(cmd: &str) -> Option<Exec> {
     let exec = match cmd {

@@ -4,6 +4,7 @@ use std::process::Command as ProcessCommand;
 use std::time::Instant;
 
 use crate::context::GlobalContext;
+use crate::errors::{CliError, CliResult};
 
 pub fn command() -> Command {
     Command::new("dbrun")
@@ -16,12 +17,10 @@ pub fn command() -> Command {
         )
 }
 
-pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
+pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let file = match args.get_one::<String>("file") {
         Some(val) => val.clone(),
-        None => {
-            return;
-        }
+        None => return Ok(()),
     };
 
     let file = if !file.ends_with(".cpp") {
@@ -31,8 +30,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
     };
 
     if !Path::new(&file).exists() {
-        gctx.shell().error(format!("{} file not found.", file));
-        return;
+        return Err(CliError::new(format!("{} file not found.", file), 1));
     }
 
     let start_time = Instant::now();
@@ -40,12 +38,10 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
     let status = ProcessCommand::new("sh")
         .arg("-c")
         .arg(&compile_command)
-        .status()
-        .expect("Failed to execute compile command!");
+        .status()?;
 
     if !status.success() {
-        eprint!("Compilation failed!");
-        return;
+        return Err(CliError::from("compilation failed"));
     }
 
     let duration = start_time.elapsed();
@@ -54,7 +50,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
         duration.as_secs_f32()
     ));
 
-    let _ = ProcessCommand::new("./a.out")
-        .status()
-        .expect("Failed to execute compiled program!");
+    ProcessCommand::new("./a.out").status()?;
+
+    Ok(())
 }
