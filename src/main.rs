@@ -211,7 +211,9 @@ fn branp() -> Command {
     <cyan,bold>format</>, <cyan,bold>f</>       Format the current working directory
     <cyan,bold>git</>, <cyan,bold>g</>          Git-related commands
     <cyan,bold>dbrun</>, <cyan,bold>r</>        Run a standalone C++ code file
-    <cyan,bold>template-gen</>    Generate test case files for a given file name"
+    <cyan,bold>sample-gen</>      Generate sample input/output files for a C++ file
+    <cyan,bold>test-samples</>    Compile a C++ file and run it against sample input/output
+    <cyan,bold>gen</>             Generate template file(s) from the config templates dir"
         ))
         .arg(
             Arg::new("version")
