@@ -4,6 +4,7 @@
 //!
 
 use crate::context::GlobalContext;
+use crate::errors::{CliError, CliResult};
 use clap::{Arg, ArgMatches, Command};
 use serde::Deserialize;
 
@@ -34,7 +35,7 @@ pub fn command() -> Command {
         )
 }
 
-pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
+pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     if let Some(sub) = args.subcommand_matches("coauthor") {
         for user in sub.get_many::<String>("usernames").unwrap() {
             match fetch_github_user(user) {
@@ -46,24 +47,18 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
         let remote = sub.get_one::<String>("remote").unwrap();
         let (owner, repo) = match parse_owner_repo(remote) {
             Ok(pair) => pair,
-            Err(e) => {
-                gctx.shell().error(e);
-                return;
-            }
+            Err(e) => return Err(CliError::from(e)),
         };
 
         let client = reqwest::blocking::Client::new();
         let prs = match fetch_open_prs(&client, &owner, &repo) {
             Ok(v) => v,
-            Err(e) => {
-                gctx.shell().error(e);
-                return;
-            }
+            Err(e) => return Err(CliError::from(e)),
         };
 
         if prs.is_empty() {
             gctx.shell().note("No open pull requests found.");
-            return;
+            return Ok(());
         }
 
         for pr in prs {
@@ -96,8 +91,10 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
             gctx.shell().note("------------------------------");
         }
     } else {
-        gctx.shell().error("No `git` subcommand provided");
+        return Err(CliError::from("no `git` subcommand provided"));
     }
+
+    Ok(())
 }
 
 fn fetch_github_user(username: &str) -> Result<String, String> {

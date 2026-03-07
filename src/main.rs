@@ -4,22 +4,34 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::commands::branp_exec;
 use crate::context::GlobalContext;
+use crate::errors::{CliError, CliResult};
 use crate::version::get_version_info;
 
 mod commands;
 mod context;
+mod errors;
 mod version;
 
 fn main() {
-    let args = branp().try_get_matches().unwrap();
     let mut gctx = match GlobalContext::default() {
-        Some(gctx) => gctx,
-        None => {
-            panic!("Failed to create global context");
+        Ok(gctx) => gctx,
+        Err(e) => {
+            let mut shell = context::Shell::new();
+            shell.error(e.message);
+            std::process::exit(e.code);
         }
     };
 
-    let (expanded_args, global_args) = expand_aliases(&mut gctx, args, vec![]).unwrap();
+    if let Err(e) = run(&mut gctx) {
+        gctx.shell().error(e.message);
+        std::process::exit(e.code);
+    }
+}
+
+fn run(gctx: &mut GlobalContext) -> CliResult {
+    let args = branp().try_get_matches().unwrap_or_else(|e| e.exit());
+
+    let (expanded_args, global_args) = expand_aliases(gctx, args, vec![])?;
     let is_verbose = expanded_args.get_count("verbose") > 0;
 
     if expanded_args.get_flag("version") {
@@ -31,14 +43,16 @@ fn main() {
             _ => {
                 // No subcommand provided.
                 let _ = branp().print_help();
-                return;
+                return Ok(());
             }
         };
 
-        let exec = Exec::infer(cmd);
-        configure_gctx(&mut gctx, &expanded_args, subcommand_args, global_args);
-        exec.exec(&mut gctx, subcommand_args);
+        let exec = Exec::infer(cmd)?;
+        configure_gctx(gctx, &expanded_args, subcommand_args, global_args)?;
+        exec.exec(gctx, subcommand_args)?;
     }
+
+    Ok(())
 }
 
 enum Exec {
@@ -46,21 +60,18 @@ enum Exec {
 }
 
 impl Exec {
-    fn infer(cmd: &str) -> Self {
+    fn infer(cmd: &str) -> Result<Self, CliError> {
         if let Some(exec) = commands::branp_exec(cmd) {
-            Self::Branp(exec)
+            Ok(Self::Branp(exec))
         } else {
-            // Until branp supports colored logging and exiting outside of simply halting the program
-            // this will be left here. Once status printing is improved this will be removed.
-            color_print::cprintln!(
-                "<red,bold>error</>: <yellow>{}</> is not a valid subcommand",
-                cmd
-            );
-            std::process::exit(1);
+            Err(CliError::new(
+                format!("`{}` is not a valid subcommand", cmd),
+                1,
+            ))
         }
     }
 
-    fn exec(self, gctx: &mut context::GlobalContext, subcommand_args: &ArgMatches) {
+    fn exec(self, gctx: &mut context::GlobalContext, subcommand_args: &ArgMatches) -> CliResult {
         match self {
             Self::Branp(exec) => exec(gctx, subcommand_args),
         }
@@ -100,7 +111,7 @@ fn expand_aliases(
     gctx: &mut GlobalContext,
     args: ArgMatches,
     mut already_expanded: Vec<String>,
-) -> Option<(ArgMatches, GlobalArgs)> {
+) -> Result<(ArgMatches, GlobalArgs), CliError> {
     if let Some((cmd, subcommand_args)) = args.subcommand() {
         let exec = branp_exec(cmd);
         let aliased_cmd = aliased_command(cmd);
@@ -132,26 +143,26 @@ fn expand_aliases(
                 let new_args = branp()
                     .no_binary_name(true)
                     .try_get_matches_from(alias)
-                    .unwrap();
+                    .unwrap_or_else(|e| e.exit());
                 let Some(new_command) = new_args.subcommand_name() else {
-                    panic!(
-                        "subcommand is required, add a subcommand to the command alias `alias.{}",
-                        cmd
-                    );
+                    return Err(CliError::new(
+                        format!("alias `{}` must resolve to a subcommand", cmd),
+                        1,
+                    ));
                 };
 
                 already_expanded.push(cmd.to_string());
                 if already_expanded.contains(&new_command.to_string()) {
-                    panic!("subcommand alias `{}` is recursive", cmd);
+                    return Err(CliError::new(format!("alias `{}` is recursive", cmd), 1));
                 }
 
                 let (expanded_args, _) = expand_aliases(gctx, new_args, already_expanded)?;
-                return Some((expanded_args, global_args));
+                return Ok((expanded_args, global_args));
             }
         }
     }
 
-    Some((args, GlobalArgs::default()))
+    Ok((args, GlobalArgs::default()))
 }
 
 fn configure_gctx(
@@ -159,11 +170,11 @@ fn configure_gctx(
     args: &ArgMatches,
     subcommand_args: &ArgMatches,
     global_args: GlobalArgs,
-) {
+) -> CliResult {
     let quiet = args.get_flag("quiet") || subcommand_args.get_flag("quiet") || global_args.quiet;
     let verbose = global_args.verbose + args.get_count("verbose") as u32;
 
-    gctx.configure(verbose, quiet);
+    gctx.configure(verbose, quiet)
 }
 
 fn get_version_string(is_verbose: bool) -> String {

@@ -26,6 +26,7 @@ use std::collections::HashSet;
 use std::fs;
 
 use crate::context::GlobalContext;
+use crate::errors::{CliError, CliResult};
 
 pub fn command() -> Command {
     Command::new("gen")
@@ -38,7 +39,7 @@ pub fn command() -> Command {
         )
 }
 
-pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
+pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let templates_dir = gctx.templates_dir();
     let case_insensitive_paths: HashSet<String> = args
         .get_many::<String>("args")
@@ -47,7 +48,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
         .collect();
 
     let entries = fs::read_dir(&templates_dir)
-        .unwrap_or_else(|_| panic!("Failed to read templates directory"));
+        .map_err(|_| CliError::from("failed to read templates directory"))?;
 
     let expanded_paths: Vec<String> = entries
         .filter_map(Result::ok)
@@ -65,7 +66,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
     if expanded_paths.is_empty() {
         gctx.shell()
             .warn("No templates found for the given file(s) / directory(s)");
-        return;
+        return Ok(());
     }
 
     for path in expanded_paths {
@@ -81,4 +82,6 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) {
                 .note(format!("Generated template file: {}", file_name));
         }
     }
+
+    Ok(())
 }
