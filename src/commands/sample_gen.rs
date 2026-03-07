@@ -7,8 +7,8 @@ use crate::context::GlobalContext;
 use crate::errors::{CliError, CliResult};
 
 pub fn command() -> Command {
-    Command::new("template-gen")
-        .about("Generate test case files for a given file name")
+    Command::new("sample-gen")
+        .about("Generate sample input/output files for a given C++ file")
         .arg(
             Arg::new("file")
                 .help("The file to run on")
