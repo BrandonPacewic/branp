@@ -1,26 +1,3 @@
-//! `gen` subcommand.
-//!
-//! This command generates one or more template files from the `branp/templates` directory.
-//! It is variadic: you can provide multiple file or directory names in a single invocation,
-//! separated by spaces.
-//!
-//! For example:
-//! ```bash
-//! $ bp gen test.cpp
-//! ```
-//! This will copy `branp/templates/test.cpp` into the current directory as `test.cpp`.
-//!
-//! You can also generate multiple items at once:
-//! ```bash
-//! $ bp gen makes clang-format default.clang-format
-//! ```
-//! If `makes` is a directory, all files from `branp/templates/makes` will be copied. The
-//! command will also copy `branp/templates/clang-format/default.clang-format` if it exists, given that
-//! `clang-format` is a directory. This allows for the structuring of templates in subdirectories.
-//!
-//! If no matching templates are found for a given filename or directory, a warning is
-//! printed and no files are copied.
-
 use clap::{Arg, ArgMatches, Command};
 use std::collections::HashSet;
 use std::fs;
@@ -28,23 +5,62 @@ use std::fs;
 use crate::context::GlobalContext;
 use crate::errors::{CliError, CliResult};
 
+const LONG_ABOUT: &str = "\
+Copy template files from ~/.config/branp/templates into the current directory.
+
+Template names are matched case-insensitively against files in the templates \
+directory (flat, no subdirectory search). Multiple templates can be specified \
+in one invocation.
+
+EXAMPLES:
+    # Copy a single template
+    bp gen test.cpp
+
+    # Copy multiple templates
+    bp gen test.cpp makefile
+
+    # Generate 3 copies named A.cpp, B.cpp, C.cpp
+    bp gen test.cpp -n 3";
+
 pub fn command() -> Command {
     Command::new("gen")
-        .about("Generate a template file(s) from <config dir>/branp/templates")
+        .about("Generate template file(s) from <config dir>/branp/templates")
+        .long_about(LONG_ABOUT)
         .arg(
             Arg::new("args")
                 .help("The file(s) / directory(s) to generate")
                 .required(true)
                 .num_args(1..),
         )
+        .arg(
+            Arg::new("count")
+                .short('n')
+                .long("count")
+                .help("Generate N copies named A.ext, B.ext, etc. (requires exactly one template arg)")
+                .value_name("N")
+                .value_parser(clap::value_parser!(u8)),
+        )
 }
 
 pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let templates_dir = gctx.templates_dir();
-    let case_insensitive_paths: HashSet<String> = args
+    let count = args.get_one::<u8>("count").copied();
+
+    let template_args: Vec<String> = args
         .get_many::<String>("args")
         .unwrap()
-        .map(|s| s.to_string().to_ascii_lowercase())
+        .map(|s| s.to_string())
+        .collect();
+
+    if count.is_some() && template_args.len() != 1 {
+        return Err(CliError::from(
+            "--count requires exactly one template argument",
+        ));
+    }
+
+    let case_insensitive_paths: HashSet<String> = template_args
+        .iter()
+        .map(|s| s.to_ascii_lowercase())
         .collect();
 
     let entries = fs::read_dir(&templates_dir)
@@ -69,17 +85,36 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
         return Ok(());
     }
 
-    for path in expanded_paths {
-        let file_name = path.split('/').next_back().unwrap();
-        let dest_path = format!("{}/{}", gctx.cwd().to_string_lossy(), file_name);
-        if fs::copy(&path, &dest_path).is_err() {
-            gctx.shell().error(format!(
-                "Failed to copy template file ({}) destination {}",
-                path, dest_path
-            ));
-        } else {
-            gctx.shell()
-                .note(format!("Generated template file: {}", file_name));
+    if let Some(n) = count {
+        let path = &expanded_paths[0];
+        let ext = path.rsplit('.').next().unwrap_or("");
+        for i in 0..n {
+            let letter = (b'A' + i) as char;
+            let file_name = format!("{}.{}", letter, ext);
+            let dest_path = format!("{}/{}", gctx.cwd().to_string_lossy(), file_name);
+            if fs::copy(path, &dest_path).is_err() {
+                gctx.shell().error(format!(
+                    "Failed to copy template file ({}) to {}",
+                    path, dest_path
+                ));
+            } else {
+                gctx.shell()
+                    .note(format!("Generated template file: {}", file_name));
+            }
+        }
+    } else {
+        for path in expanded_paths {
+            let file_name = path.split('/').next_back().unwrap();
+            let dest_path = format!("{}/{}", gctx.cwd().to_string_lossy(), file_name);
+            if fs::copy(&path, &dest_path).is_err() {
+                gctx.shell().error(format!(
+                    "Failed to copy template file ({}) destination {}",
+                    path, dest_path
+                ));
+            } else {
+                gctx.shell()
+                    .note(format!("Generated template file: {}", file_name));
+            }
         }
     }
 
