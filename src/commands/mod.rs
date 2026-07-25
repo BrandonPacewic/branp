@@ -5,13 +5,13 @@ use crate::errors::CliResult;
 
 pub fn branp() -> Vec<Command> {
     vec![
-        dbrun::command().visible_alias("r"),
+        dbrun::command().alias("r"),
         sample_gen::command(),
         test_samples::command(),
-        format::command().visible_alias("f"),
+        format::command().alias("f"),
         gen::command(),
-        git::command().visible_alias("g"),
-        worktree::command().visible_alias("wt"),
+        git::command().alias("g"),
+        worktree::command().alias("wt"),
         uninstall::command(),
     ]
 }
