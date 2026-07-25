@@ -97,27 +97,21 @@ fn prs(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     for pr in prs {
         let changes = fetch_changes_count(&client, &owner, &repo, pr.number).unwrap_or(0);
 
+        let pr_label =
+            crate::utils::terminal::hyperlink(&format!("PR #{}", pr.number), &pr.html_url);
         gctx.shell().note(format!(
-            "PR #{} {}{}",
-            pr.number,
+            "{} {}{}",
+            pr_label,
             if pr.draft { "[DRAFT] " } else { "" },
             pr.title
         ));
         gctx.shell().note(format!(
             "  Assignees : {}",
-            pr.assignees
-                .iter()
-                .map(|u| u.login.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
+            linked_github_users(&pr.assignees)
         ));
         gctx.shell().note(format!(
             "  Reviewers : {}",
-            pr.requested_reviewers
-                .iter()
-                .map(|u| u.login.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
+            linked_github_users(&pr.requested_reviewers)
         ));
         gctx.shell()
             .note(format!("  Change requests pending: {changes}"));
@@ -139,7 +133,10 @@ fn open(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     };
 
     browser::open_url(&url)?;
-    gctx.shell().note(format!("Opened {url}"));
+    gctx.shell().note(format!(
+        "Opened {}",
+        crate::utils::terminal::hyperlink(&url, &url)
+    ));
     Ok(())
 }
 
@@ -357,10 +354,24 @@ struct SimpleUser {
     login: String,
 }
 
+fn linked_github_users(users: &[SimpleUser]) -> String {
+    users
+        .iter()
+        .map(|user| {
+            crate::utils::terminal::hyperlink(
+                &user.login,
+                &format!("https://github.com/{}", user.login),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[derive(serde::Deserialize)]
 struct PullRequest {
     number: u64,
     title: String,
+    html_url: String,
     draft: bool,
     assignees: Vec<SimpleUser>,
     requested_reviewers: Vec<SimpleUser>,
