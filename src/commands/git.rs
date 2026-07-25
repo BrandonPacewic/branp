@@ -118,18 +118,9 @@ fn fetch_github_user(username: &str) -> Result<String, String> {
 
 /// Parse `git remote get-url <remote>` into (owner, repo)
 fn parse_owner_repo(remote: &str) -> Result<(String, String), String> {
-    let out = std::process::Command::new("git")
-        .arg("remote")
-        .arg("get-url")
-        .arg(remote)
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if !out.status.success() {
-        return Err(format!("Failed to get URL for remote `{remote}`"));
-    }
-
-    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let url = crate::utils::command::output("git", &["remote", "get-url", remote], None)
+        .map_err(|_| format!("Failed to get URL for remote `{remote}`"))?;
+    let url = url.trim();
     let path = if let Some(stripped) = url.strip_prefix("git@github.com:") {
         stripped.to_string()
     } else if let Some(stripped) = url.strip_prefix("https://github.com/") {

@@ -13,6 +13,7 @@ use crate::version::get_version_info;
 mod commands;
 mod context;
 mod errors;
+mod utils;
 mod version;
 
 fn main() {
@@ -217,6 +218,7 @@ fn branp() -> Command {
 <green,bold>Commands:</>
     <cyan,bold>format</>, <cyan,bold>f</>       Format the current working directory
     <cyan,bold>git</>, <cyan,bold>g</>          Git-related commands
+    <cyan,bold>worktree</>, <cyan,bold>wt</>    Manage sibling Git worktrees
     <cyan,bold>dbrun</>, <cyan,bold>r</>        Run a standalone C++ code file
     <cyan,bold>sample-gen</>      Generate sample input/output files for a C++ file
     <cyan,bold>test-samples</>    Compile a C++ file and run it against sample input/output

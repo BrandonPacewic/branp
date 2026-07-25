@@ -11,6 +11,7 @@ pub fn branp() -> Vec<Command> {
         format::command().visible_alias("f"),
         gen::command(),
         git::command().visible_alias("g"),
+        worktree::command().visible_alias("wt"),
         uninstall::command(),
     ]
 }
@@ -25,6 +26,7 @@ pub fn branp_exec(cmd: &str) -> Option<Exec> {
         "format" => format::exec,
         "gen" => gen::exec,
         "git" => git::exec,
+        "worktree" => worktree::exec,
         "uninstall" => uninstall::exec,
         _ => return None,
     };
@@ -39,3 +41,4 @@ pub mod git;
 pub mod sample_gen;
 pub mod test_samples;
 pub mod uninstall;
+pub mod worktree;

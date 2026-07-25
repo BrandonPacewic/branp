@@ -12,6 +12,8 @@ pub struct GlobalContext {
     shell: Shell,
     /// [`PathBuf`] to the current working directory at runtime.
     cwd: PathBuf,
+    /// Number of explicit verbose flags passed by the user.
+    verbose: u32,
 }
 
 impl GlobalContext {
@@ -20,6 +22,7 @@ impl GlobalContext {
             home_path: homedir,
             shell,
             cwd,
+            verbose: 0,
         }
     }
 
@@ -32,6 +35,7 @@ impl GlobalContext {
     }
 
     pub fn configure(&mut self, verbose: u32, quiet: bool) -> CliResult {
+        self.verbose = verbose;
         let _extra_verbose = verbose >= 2;
         let verbose = verbose > 0;
         let verbosity = match (verbose, quiet) {
@@ -56,6 +60,10 @@ impl GlobalContext {
 
     pub fn cwd(&self) -> &PathBuf {
         &self.cwd
+    }
+
+    pub fn is_verbose(&self) -> bool {
+        self.verbose > 0
     }
 
     pub fn shell(&mut self) -> &mut Shell {
