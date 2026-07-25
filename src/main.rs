@@ -14,6 +14,7 @@ use crate::version::get_version_info;
 mod commands;
 mod completions;
 mod context;
+mod doctor;
 mod errors;
 mod utils;
 mod version;
@@ -228,6 +229,7 @@ fn branp() -> Command {
 {options}
 
 <green,bold>Commands:</>
+    <cyan,bold>doctor</>          Diagnose and repair local CLI integration issues
     <cyan,bold>format</>, <cyan,bold>f</>       Format the current working directory
     <cyan,bold>git</>, <cyan,bold>g</>          Git-related commands
     <cyan,bold>worktree</>, <cyan,bold>wt</>    Manage sibling Git worktrees
