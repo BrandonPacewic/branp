@@ -40,7 +40,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
         for user in sub.get_many::<String>("usernames").unwrap() {
             match fetch_github_user(user) {
                 Ok(line) => gctx.shell().note(line),
-                Err(e) => gctx.shell().error(format!("{}: {}", user, e)),
+                Err(e) => gctx.shell().error(format!("{user}: {e}")),
             }
         }
     } else if let Some(sub) = args.subcommand_matches("prs") {
@@ -87,7 +87,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
                     .join(", ")
             ));
             gctx.shell()
-                .note(format!("  Change requests pending: {}", changes));
+                .note(format!("  Change requests pending: {changes}"));
             gctx.shell().note("------------------------------");
         }
     } else {
@@ -98,7 +98,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
 }
 
 fn fetch_github_user(username: &str) -> Result<String, String> {
-    let url = format!("https://api.github.com/users/{}", username);
+    let url = format!("https://api.github.com/users/{username}");
     let client = reqwest::blocking::Client::new();
     let resp = client
         .get(&url)
@@ -113,7 +113,7 @@ fn fetch_github_user(username: &str) -> Result<String, String> {
     let u: User = resp.json().map_err(|e| e.to_string())?;
     let name = u.name.unwrap_or_else(|| u.login.clone());
     let email = format!("{}+{}@users.noreply.github.com", u.id, u.login);
-    Ok(format!("Co-authored-by: {} <{}>", name, email))
+    Ok(format!("Co-authored-by: {name} <{email}>"))
 }
 
 /// Parse `git remote get-url <remote>` into (owner, repo)
@@ -126,7 +126,7 @@ fn parse_owner_repo(remote: &str) -> Result<(String, String), String> {
         .map_err(|e| e.to_string())?;
 
     if !out.status.success() {
-        return Err(format!("Failed to get URL for remote `{}`", remote));
+        return Err(format!("Failed to get URL for remote `{remote}`"));
     }
 
     let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -135,7 +135,7 @@ fn parse_owner_repo(remote: &str) -> Result<(String, String), String> {
     } else if let Some(stripped) = url.strip_prefix("https://github.com/") {
         stripped.to_string()
     } else {
-        return Err(format!("Unsupported remote URL format: {}", url));
+        return Err(format!("Unsupported remote URL format: {url}"));
     };
 
     let path = path.trim_end_matches(".git");
@@ -150,10 +150,7 @@ fn fetch_open_prs(
     owner: &str,
     repo: &str,
 ) -> Result<Vec<PullRequest>, String> {
-    let url = format!(
-        "https://api.github.com/repos/{}/{}/pulls?state=open",
-        owner, repo
-    );
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls?state=open");
     let resp = client
         .get(&url)
         .header("User-Agent", "branp-git-prs")
@@ -173,10 +170,7 @@ fn fetch_changes_count(
     repo: &str,
     pr_number: u64,
 ) -> Result<usize, String> {
-    let url = format!(
-        "https://api.github.com/repos/{}/{}/pulls/{}/reviews",
-        owner, repo, pr_number
-    );
+    let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews");
     let resp = client
         .get(&url)
         .header("User-Agent", "branp-git-prs")

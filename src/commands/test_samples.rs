@@ -35,23 +35,23 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let file = if file.ends_with(".cpp") {
         file.clone()
     } else {
-        format!("{}.cpp", file)
+        format!("{file}.cpp")
     };
 
     if !Path::new(&file).exists() {
-        return Err(CliError::new(format!("{} not found.", file), 1));
+        return Err(CliError::new(format!("{file} not found."), 1));
     }
 
     let stem = file.trim_end_matches(".cpp");
-    let input_path = format!("{}_input.txt", stem);
-    let output_path = format!("{}_output.txt", stem);
+    let input_path = format!("{stem}_input.txt");
+    let output_path = format!("{stem}_output.txt");
 
     let test_input = fs::read_to_string(&input_path)
-        .map_err(|_| CliError::new(format!("{} not found.", input_path), 1))?;
+        .map_err(|_| CliError::new(format!("{input_path} not found."), 1))?;
     let expected_output = fs::read_to_string(&output_path)
-        .map_err(|_| CliError::new(format!("{} not found.", output_path), 1))?;
+        .map_err(|_| CliError::new(format!("{output_path} not found."), 1))?;
 
-    let compile_command = format!("g++ -g -std=c++17 -Wall -DDBG_MODE {}", file);
+    let compile_command = format!("g++ -g -std=c++17 -Wall -DDBG_MODE {file}");
     let status = ProcessCommand::new("sh")
         .arg("-c")
         .arg(&compile_command)

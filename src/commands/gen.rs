@@ -90,16 +90,15 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
         let ext = path.rsplit('.').next().unwrap_or("");
         for i in 0..n {
             let letter = (b'A' + i) as char;
-            let file_name = format!("{}.{}", letter, ext);
+            let file_name = format!("{letter}.{ext}");
             let dest_path = format!("{}/{}", gctx.cwd().to_string_lossy(), file_name);
             if fs::copy(path, &dest_path).is_err() {
                 gctx.shell().error(format!(
-                    "Failed to copy template file ({}) to {}",
-                    path, dest_path
+                    "Failed to copy template file ({path}) to {dest_path}"
                 ));
             } else {
                 gctx.shell()
-                    .note(format!("Generated template file: {}", file_name));
+                    .note(format!("Generated template file: {file_name}"));
             }
         }
     } else {
@@ -108,12 +107,11 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
             let dest_path = format!("{}/{}", gctx.cwd().to_string_lossy(), file_name);
             if fs::copy(&path, &dest_path).is_err() {
                 gctx.shell().error(format!(
-                    "Failed to copy template file ({}) destination {}",
-                    path, dest_path
+                    "Failed to copy template file ({path}) destination {dest_path}"
                 ));
             } else {
                 gctx.shell()
-                    .note(format!("Generated template file: {}", file_name));
+                    .note(format!("Generated template file: {file_name}"));
             }
         }
     }

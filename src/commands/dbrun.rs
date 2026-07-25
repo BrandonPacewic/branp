@@ -24,17 +24,17 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     };
 
     let file = if !file.ends_with(".cpp") {
-        format!("{}.cpp", file)
+        format!("{file}.cpp")
     } else {
         file
     };
 
     if !Path::new(&file).exists() {
-        return Err(CliError::new(format!("{} file not found.", file), 1));
+        return Err(CliError::new(format!("{file} file not found."), 1));
     }
 
     let start_time = Instant::now();
-    let compile_command = format!("g++ -g -std=c++17 -Wall -DDBG_MODE {}", file);
+    let compile_command = format!("g++ -g -std=c++17 -Wall -DDBG_MODE {file}");
     let status = ProcessCommand::new("sh")
         .arg("-c")
         .arg(&compile_command)
