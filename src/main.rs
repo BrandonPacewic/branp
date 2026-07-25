@@ -221,6 +221,7 @@ fn branp() -> Command {
     <cyan,bold>sample-gen</>      Generate sample input/output files for a C++ file
     <cyan,bold>test-samples</>    Compile a C++ file and run it against sample input/output
     <cyan,bold>gen</>             Generate template file(s) from the config templates dir
+    <cyan,bold>uninstall</>       Delete the running bp binary and shell completions
     <cyan,bold>completion</>      Generate shell completion scripts"
         ))
         .arg(
@@ -289,6 +290,9 @@ fn install_completion(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult 
     let mut script = Vec::new();
     generate(shell, &mut cmd, "bp", &mut script);
     fs::write(&path, script)?;
+    if shell == Shell::Zsh {
+        remove_zsh_completion_caches(gctx.home())?;
+    }
 
     gctx.shell()
         .note(format!("Installed completion script to {}", path.display()));
@@ -303,9 +307,39 @@ fn completion_path(home: &Path, shell: Shell) -> PathBuf {
         Shell::Elvish => home.join(".config/elvish/lib/bp-completions.elv"),
         Shell::Fish => home.join(".config/fish/completions/bp.fish"),
         Shell::PowerShell => home.join("Documents/PowerShell/Modules/bp/_bp.ps1"),
-        Shell::Zsh => home.join(".zsh/completions/_bp"),
+        Shell::Zsh => zsh_completion_path(home),
         _ => home.join(".local/share/bp/completions/bp"),
     }
+}
+
+fn zsh_completion_path(home: &Path) -> PathBuf {
+    let oh_my_zsh = home.join(".oh-my-zsh");
+    if oh_my_zsh.exists() {
+        return oh_my_zsh.join("custom/completions/_bp");
+    }
+
+    home.join(".zsh/completions/_bp")
+}
+
+fn remove_zsh_completion_caches(home: &Path) -> CliResult {
+    let entries = match fs::read_dir(home) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(()),
+    };
+
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        let is_zcompdump = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(".zcompdump"));
+
+        if is_zcompdump && path.is_file() {
+            fs::remove_file(&path)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn print_shell_reload_hint(gctx: &mut GlobalContext, shell: Shell) {
@@ -314,10 +348,10 @@ fn print_shell_reload_hint(gctx: &mut GlobalContext, shell: Shell) {
         Shell::Elvish => "Restart elvish, or add `use bp-completions` to ~/.config/elvish/rc.elv.",
         Shell::Fish => "Restart fish, or run `exec fish`.",
         Shell::PowerShell => "Source the installed _bp.ps1 file from your PowerShell profile.",
-        Shell::Zsh => {
-            "Add `fpath=(~/.zsh/completions $fpath)` before `compinit` in ~/.zshrc, then restart zsh."
+        Shell::Zsh => "Restart zsh, or run `autoload -Uz compinit && compinit`.",
+        _ => {
+            "Restart your shell after wiring the installed completion file into your shell config."
         }
-        _ => "Restart your shell after wiring the installed completion file into your shell config.",
     };
 
     gctx.shell().note(hint);
