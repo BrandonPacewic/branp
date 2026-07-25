@@ -15,7 +15,7 @@ pub fn command() -> Command {
         .arg_required_else_help(true)
         .subcommand(
             Command::new("list")
-                .visible_alias("ls")
+                .alias("ls")
                 .about("List Git worktrees")
                 .arg(
                     Arg::new("no-pr")
@@ -55,7 +55,7 @@ pub fn command() -> Command {
         )
         .subcommand(
             Command::new("remove")
-                .visible_alias("rm")
+                .alias("rm")
                 .about("Remove a sibling worktree and its local branch")
                 .arg(Arg::new("name").required(true).value_name("NAME"))
                 .arg(
