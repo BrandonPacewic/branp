@@ -182,8 +182,7 @@ fn get_clang_format_config(gctx: &mut GlobalContext, args: &ArgMatches) -> Optio
 
     if config_file.is_none() {
         gctx.shell().warn(format!(
-            "No config file found for {}. Available configs: {:?}",
-            config, config_names
+            "No config file found for {config}. Available configs: {config_names:?}"
         ));
         return None;
     }
@@ -203,7 +202,7 @@ fn clang_format_command(file: &PathBuf, config: &Option<String>) -> ProcessComma
     let mut command = ProcessCommand::new("clang-format");
     command.arg("-i");
     if let Some(config) = config {
-        command.arg(format!("--style=file:{}", config));
+        command.arg(format!("--style=file:{config}"));
     } else {
         command.arg("--style=file");
     }

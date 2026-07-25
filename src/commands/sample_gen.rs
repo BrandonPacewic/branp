@@ -27,8 +27,8 @@ pub fn exec(_gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
         file = file.trim_end_matches(".cpp").to_string();
     }
 
-    let test_input = format!("{}_input.txt", file);
-    let test_output = format!("{}_output.txt", file);
+    let test_input = format!("{file}_input.txt");
+    let test_output = format!("{file}_output.txt");
 
     File::create(&test_input)?;
     File::create(&test_output)?;

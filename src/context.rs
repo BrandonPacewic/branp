@@ -85,7 +85,7 @@ impl Shell {
 
         let mut buffer = Vec::new();
         match message {
-            Some(message) => writeln!(buffer, "{}", message).unwrap(),
+            Some(message) => writeln!(buffer, "{message}").unwrap(),
             None => writeln!(buffer).unwrap(),
         }
 

@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use clap_complete::{generate, Shell};
@@ -39,7 +39,7 @@ fn run(gctx: &mut GlobalContext) -> CliResult {
 
     if expanded_args.get_flag("version") {
         let version = get_version_string(is_verbose);
-        print!("{}", version);
+        print!("{version}");
     } else {
         let (cmd, subcommand_args) = match expanded_args.subcommand() {
             Some((cmd, args)) => (cmd, args),
@@ -73,7 +73,7 @@ impl Exec {
             Ok(Self::Branp(exec))
         } else {
             Err(CliError::new(
-                format!("`{}` is not a valid subcommand", cmd),
+                format!("`{cmd}` is not a valid subcommand"),
                 1,
             ))
         }
@@ -128,8 +128,7 @@ fn expand_aliases(
             (Some(_), Some(_)) => {
                 // User alias conflicts with built-in subcommand.
                 gctx.shell().warn(format!(
-                    "user-defined alias `{}` is ignored as it conflicts with a built-in subcommand",
-                    cmd
+                    "user-defined alias `{cmd}` is ignored as it conflicts with a built-in subcommand"
                 ));
             }
             (Some(_), None) => {} // Found a subcommand with no overlapping alias, do nothing.
@@ -154,14 +153,14 @@ fn expand_aliases(
                     .unwrap_or_else(|e| e.exit());
                 let Some(new_command) = new_args.subcommand_name() else {
                     return Err(CliError::new(
-                        format!("alias `{}` must resolve to a subcommand", cmd),
+                        format!("alias `{cmd}` must resolve to a subcommand"),
                         1,
                     ));
                 };
 
                 already_expanded.push(cmd.to_string());
                 if already_expanded.contains(&new_command.to_string()) {
-                    return Err(CliError::new(format!("alias `{}` is recursive", cmd), 1));
+                    return Err(CliError::new(format!("alias `{cmd}` is recursive"), 1));
                 }
 
                 let (expanded_args, _) = expand_aliases(gctx, new_args, already_expanded)?;
@@ -187,7 +186,7 @@ fn configure_gctx(
 
 fn get_version_string(is_verbose: bool) -> String {
     let version = get_version_info();
-    let mut version_string = format!("branp {}", version);
+    let mut version_string = format!("branp {version}");
     if is_verbose {
         version_string.push_str(" (rust)\n");
 
@@ -298,7 +297,7 @@ fn install_completion(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult 
     Ok(())
 }
 
-fn completion_path(home: &PathBuf, shell: Shell) -> PathBuf {
+fn completion_path(home: &Path, shell: Shell) -> PathBuf {
     match shell {
         Shell::Bash => home.join(".local/share/bash-completion/completions/bp"),
         Shell::Elvish => home.join(".config/elvish/lib/bp-completions.elv"),
