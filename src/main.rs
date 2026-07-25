@@ -1,6 +1,9 @@
 use std::ffi::OsString;
+use std::fs;
+use std::path::PathBuf;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
+use clap_complete::{generate, Shell};
 
 use crate::commands::branp_exec;
 use crate::context::GlobalContext;
@@ -47,9 +50,14 @@ fn run(gctx: &mut GlobalContext) -> CliResult {
             }
         };
 
-        let exec = Exec::infer(cmd)?;
-        configure_gctx(gctx, &expanded_args, subcommand_args, global_args)?;
-        exec.exec(gctx, subcommand_args)?;
+        if cmd == "completion" {
+            configure_gctx(gctx, &expanded_args, subcommand_args, global_args)?;
+            install_completion(gctx, subcommand_args)?;
+        } else {
+            let exec = Exec::infer(cmd)?;
+            configure_gctx(gctx, &expanded_args, subcommand_args, global_args)?;
+            exec.exec(gctx, subcommand_args)?;
+        }
     }
 
     Ok(())
@@ -198,7 +206,7 @@ fn get_version_string(is_verbose: bool) -> String {
 }
 
 fn branp() -> Command {
-    Command::new("branp")
+    Command::new("bp")
         .allow_external_subcommands(true)
         .help_template(color_print::cstr!(
             "\
@@ -213,7 +221,8 @@ fn branp() -> Command {
     <cyan,bold>dbrun</>, <cyan,bold>r</>        Run a standalone C++ code file
     <cyan,bold>sample-gen</>      Generate sample input/output files for a C++ file
     <cyan,bold>test-samples</>    Compile a C++ file and run it against sample input/output
-    <cyan,bold>gen</>             Generate template file(s) from the config templates dir"
+    <cyan,bold>gen</>             Generate template file(s) from the config templates dir
+    <cyan,bold>completion</>      Generate shell completion scripts"
         ))
         .arg(
             Arg::new("version")
@@ -238,5 +247,79 @@ fn branp() -> Command {
                 .action(ArgAction::SetTrue)
                 .global(true),
         )
+        .subcommand(
+            Command::new("completion")
+                .about("Generate shell completion scripts")
+                .arg(
+                    Arg::new("shell")
+                        .help("Shell to generate completions for")
+                        .required(true)
+                        .value_parser(clap::value_parser!(Shell)),
+                )
+                .arg(
+                    Arg::new("print")
+                        .long("print")
+                        .help("Print the completion script instead of installing it")
+                        .action(ArgAction::SetTrue),
+                ),
+        )
         .subcommands(commands::branp())
+}
+
+fn install_completion(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
+    let shell = args
+        .get_one::<Shell>("shell")
+        .expect("required by clap")
+        .to_owned();
+    let mut cmd = branp();
+
+    if args.get_flag("print") {
+        generate(shell, &mut cmd, "bp", &mut std::io::stdout());
+        return Ok(());
+    }
+
+    let path = completion_path(gctx.home(), shell);
+    let Some(parent) = path.parent() else {
+        return Err(CliError::from(
+            "completion path does not have a parent directory",
+        ));
+    };
+
+    fs::create_dir_all(parent)?;
+
+    let mut script = Vec::new();
+    generate(shell, &mut cmd, "bp", &mut script);
+    fs::write(&path, script)?;
+
+    gctx.shell()
+        .note(format!("Installed completion script to {}", path.display()));
+    print_shell_reload_hint(gctx, shell);
+
+    Ok(())
+}
+
+fn completion_path(home: &PathBuf, shell: Shell) -> PathBuf {
+    match shell {
+        Shell::Bash => home.join(".local/share/bash-completion/completions/bp"),
+        Shell::Elvish => home.join(".config/elvish/lib/bp-completions.elv"),
+        Shell::Fish => home.join(".config/fish/completions/bp.fish"),
+        Shell::PowerShell => home.join("Documents/PowerShell/Modules/bp/_bp.ps1"),
+        Shell::Zsh => home.join(".zsh/completions/_bp"),
+        _ => home.join(".local/share/bp/completions/bp"),
+    }
+}
+
+fn print_shell_reload_hint(gctx: &mut GlobalContext, shell: Shell) {
+    let hint = match shell {
+        Shell::Bash => "Restart your shell, or source the installed completion file.",
+        Shell::Elvish => "Restart elvish, or add `use bp-completions` to ~/.config/elvish/rc.elv.",
+        Shell::Fish => "Restart fish, or run `exec fish`.",
+        Shell::PowerShell => "Source the installed _bp.ps1 file from your PowerShell profile.",
+        Shell::Zsh => {
+            "Add `fpath=(~/.zsh/completions $fpath)` before `compinit` in ~/.zshrc, then restart zsh."
+        }
+        _ => "Restart your shell after wiring the installed completion file into your shell config.",
+    };
+
+    gctx.shell().note(hint);
 }
