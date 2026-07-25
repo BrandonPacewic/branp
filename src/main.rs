@@ -1,17 +1,18 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use clap_complete::{CompleteEnv, Shell};
 
 use crate::commands::branp_exec;
+use crate::completions::completion_script;
 use crate::context::GlobalContext;
 use crate::errors::{CliError, CliResult};
 use crate::version::get_version_info;
 
 mod commands;
+mod completions;
 mod context;
 mod errors;
 mod utils;
@@ -309,24 +310,6 @@ fn install_completion(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult 
     print_shell_reload_hint(gctx, shell);
 
     Ok(())
-}
-
-fn completion_script(shell: Shell) -> Result<String, CliError> {
-    let exe = std::env::current_exe()?;
-    let shell = shell.to_string();
-    let output = ProcessCommand::new(exe)
-        .env("BP_COMPLETE", &shell)
-        .output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(CliError::from(format!(
-            "failed to generate {shell} completion script: {stderr}"
-        )));
-    }
-
-    String::from_utf8(output.stdout)
-        .map_err(|e| CliError::from(format!("completion script was not valid UTF-8: {e}")))
 }
 
 fn completion_path(home: &Path, shell: Shell) -> PathBuf {
