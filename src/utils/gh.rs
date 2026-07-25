@@ -6,6 +6,7 @@ use crate::errors::CliError;
 pub struct PullRequest {
     pub head: String,
     pub number: u64,
+    pub url: String,
 }
 
 pub fn open_pull_requests(repo: &Path) -> Result<Vec<PullRequest>, CliError> {
@@ -17,7 +18,7 @@ pub fn open_pull_requests(repo: &Path) -> Result<Vec<PullRequest>, CliError> {
             "--state",
             "open",
             "--json",
-            "number,headRefName",
+            "number,headRefName,url",
         ],
         Some(repo),
     )?;
@@ -29,6 +30,7 @@ pub fn open_pull_requests(repo: &Path) -> Result<Vec<PullRequest>, CliError> {
         .map(|pr| PullRequest {
             head: pr.head_ref_name,
             number: pr.number,
+            url: pr.url,
         })
         .collect())
 }
@@ -38,4 +40,5 @@ pub fn open_pull_requests(repo: &Path) -> Result<Vec<PullRequest>, CliError> {
 struct GhPullRequest {
     number: u64,
     head_ref_name: String,
+    url: String,
 }

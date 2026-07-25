@@ -182,11 +182,11 @@ fn list(gctx: &mut GlobalContext, repo: &Repo, pr_lookup: bool) -> CliResult {
                 .as_deref()
                 .is_some_and(|branch| branch != repo.default_branch)
             && !remote_exists;
-        let pr_number = worktree
+        let pr = worktree
             .branch
             .as_deref()
             .and_then(|branch| pr_numbers.iter().find(|pr| pr.head == branch))
-            .map(|pr| pr.number);
+            .map(|pr| (pr.number, pr.url.clone()));
         let has_submodules = has_submodules(&worktree.path);
         let tmux_session = repo
             .name_from_path(&worktree.path)
@@ -207,7 +207,7 @@ fn list(gctx: &mut GlobalContext, repo: &Repo, pr_lookup: bool) -> CliResult {
             remote_exists,
             base,
             verbose,
-            pr_number,
+            pr,
             has_submodules,
             tmux_session,
             status,
@@ -505,7 +505,7 @@ struct WorktreeRow {
     remote_exists: bool,
     base: bool,
     verbose: bool,
-    pr_number: Option<u64>,
+    pr: Option<(u64, String)>,
     has_submodules: bool,
     tmux_session: Option<String>,
     status: StatusSummary,
@@ -533,9 +533,11 @@ impl WorktreeRow {
                 String::new()
             },
             pr: self
-                .pr_number
-                .map(|number| format!("PR #{number}"))
+                .pr
+                .as_ref()
+                .map(|(number, _)| format!("PR #{number}"))
                 .unwrap_or_default(),
+            pr_url: self.pr.as_ref().map(|(_, url)| url.clone()),
             submodules: if self.has_submodules && self.verbose {
                 "submodules".to_string()
             } else {
@@ -580,7 +582,12 @@ impl WorktreeRow {
             } else {
                 color_badge(&badges.remote, badge_widths[2], BadgeColor::Green)
             },
-            color_badge(&badges.pr, badge_widths[3], BadgeColor::Magenta),
+            color_badge_link(
+                &badges.pr,
+                badge_widths[3],
+                BadgeColor::Magenta,
+                badges.pr_url.as_deref(),
+            ),
             color_badge(&badges.submodules, badge_widths[4], BadgeColor::Yellow),
             color_badge(&badges.tmux, badge_widths[5], BadgeColor::Cyan),
         ];
@@ -595,6 +602,7 @@ struct WorktreeBadges {
     untracked: String,
     remote: String,
     pr: String,
+    pr_url: Option<String>,
     submodules: String,
     tmux: String,
 }
@@ -632,19 +640,29 @@ enum BadgeColor {
 }
 
 fn color_badge(value: &str, width: usize, color: BadgeColor) -> String {
-    let value = crate::utils::table::pad_cell(value, width);
-    if value.trim().is_empty() {
-        value
+    color_badge_link(value, width, color, None)
+}
+
+fn color_badge_link(value: &str, width: usize, color: BadgeColor, url: Option<&str>) -> String {
+    if value.is_empty() {
+        return crate::utils::table::pad_cell(value, width);
+    }
+
+    let padding = " ".repeat(width.saturating_sub(value.len()));
+    let value = if let Some(url) = url {
+        format!("{}{padding}", crate::utils::terminal::hyperlink(value, url))
     } else {
-        match color {
-            BadgeColor::Green => color_print::cformat!("<green>{value}</>"),
-            BadgeColor::Yellow => color_print::cformat!("<yellow>{value}</>"),
-            BadgeColor::YellowBold => color_print::cformat!("<yellow,bold>{value}</>"),
-            BadgeColor::RedBold => color_print::cformat!("<red,bold>{value}</>"),
-            BadgeColor::Magenta => color_print::cformat!("<magenta>{value}</>"),
-            BadgeColor::MagentaBold => color_print::cformat!("<magenta,bold>{value}</>"),
-            BadgeColor::Cyan => color_print::cformat!("<cyan>{value}</>"),
-        }
+        format!("{value}{padding}")
+    };
+
+    match color {
+        BadgeColor::Green => color_print::cformat!("<green>{value}</>"),
+        BadgeColor::Yellow => color_print::cformat!("<yellow>{value}</>"),
+        BadgeColor::YellowBold => color_print::cformat!("<yellow,bold>{value}</>"),
+        BadgeColor::RedBold => color_print::cformat!("<red,bold>{value}</>"),
+        BadgeColor::Magenta => color_print::cformat!("<magenta>{value}</>"),
+        BadgeColor::MagentaBold => color_print::cformat!("<magenta,bold>{value}</>"),
+        BadgeColor::Cyan => color_print::cformat!("<cyan>{value}</>"),
     }
 }
 
