@@ -37,6 +37,29 @@ pub fn command() -> Command {
                 ),
         )
         .subcommand(
+            Command::new("fork")
+                .about("Add and track a fork remote branch for local PR edits")
+                .arg(
+                    Arg::new("remote")
+                        .help("Fork remote name to add or reuse")
+                        .required(true)
+                        .value_name("REMOTE"),
+                )
+                .arg(
+                    Arg::new("url")
+                        .help("Fork Git URL")
+                        .required(true)
+                        .value_name("URL"),
+                )
+                .arg(
+                    Arg::new("branch")
+                        .short('b')
+                        .long("branch")
+                        .help("Branch to switch to and track; defaults to the fork remote HEAD")
+                        .value_name("BRANCH"),
+                ),
+        )
+        .subcommand(
             Command::new("open")
                 .about("Open this GitHub repo, issue, pull request, or commit in a browser")
                 .arg(
@@ -66,6 +89,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     match args.subcommand() {
         Some(("coauthor", sub)) => coauthor(gctx, sub),
         Some(("prs", sub)) => prs(gctx, sub),
+        Some(("fork", sub)) => fork(gctx, sub),
         Some(("open", sub)) => open(gctx, sub),
         _ => Err(CliError::from("no `git` subcommand provided")),
     }
@@ -119,6 +143,86 @@ fn prs(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     }
 
     Ok(())
+}
+
+fn fork(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
+    let remote = required(args, "remote")?;
+    let url = required(args, "url")?;
+
+    add_or_reuse_remote(gctx, remote, url)?;
+    run_git(gctx, &["fetch", remote])?;
+
+    let branch = match args.get_one::<String>("branch") {
+        Some(branch) => branch.to_string(),
+        None => default_branch(remote)?,
+    };
+
+    switch_to_branch(gctx, remote, &branch)?;
+
+    let upstream = format!("{remote}/{branch}");
+    let upstream_arg = format!("--set-upstream-to={upstream}");
+    run_git(gctx, &["branch", &upstream_arg])?;
+    gctx.shell()
+        .note(format!("`{branch}` is now tracking `{upstream}`"));
+
+    Ok(())
+}
+
+fn add_or_reuse_remote(gctx: &mut GlobalContext, remote: &str, url: &str) -> CliResult {
+    match remote_url(remote)? {
+        Some(existing_url) if existing_url == url => {
+            gctx.shell().note(format!(
+                "Remote `{remote}` already exists with the requested URL"
+            ));
+            Ok(())
+        }
+        Some(existing_url) => Err(CliError::from(format!(
+            "remote `{remote}` already exists with URL `{existing_url}`"
+        ))),
+        None => {
+            run_git(gctx, &["remote", "add", remote, url])?;
+            gctx.shell().note(format!("Added remote `{remote}`"));
+            Ok(())
+        }
+    }
+}
+
+fn remote_url(remote: &str) -> Result<Option<String>, CliError> {
+    match crate::utils::command::output("git", &["remote", "get-url", remote], None) {
+        Ok(url) => Ok(Some(url.trim().to_string())),
+        Err(_) => Ok(None),
+    }
+}
+
+fn default_branch(remote: &str) -> Result<String, CliError> {
+    let output =
+        crate::utils::command::output("git", &["remote", "show", remote], None).map_err(|e| {
+            CliError::from(format!(
+                "failed to determine default branch for `{remote}`: {}; pass --branch",
+                e.message
+            ))
+        })?;
+
+    output
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("HEAD branch: "))
+        .filter(|branch| !branch.is_empty() && *branch != "(unknown)")
+        .map(str::to_string)
+        .ok_or_else(|| {
+            CliError::from(format!(
+                "failed to determine default branch for `{remote}`; pass --branch"
+            ))
+        })
+}
+
+fn switch_to_branch(gctx: &mut GlobalContext, remote: &str, branch: &str) -> CliResult {
+    match run_git(gctx, &["switch", branch]) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            let upstream = format!("{remote}/{branch}");
+            run_git(gctx, &["switch", "--track", "-c", branch, &upstream])
+        }
+    }
 }
 
 fn open(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
@@ -272,6 +376,16 @@ fn fetch_github_user(username: &str) -> Result<String, String> {
     let name = u.name.unwrap_or_else(|| u.login.clone());
     let email = format!("{}+{}@users.noreply.github.com", u.id, u.login);
     Ok(format!("Co-authored-by: {name} <{email}>"))
+}
+
+fn run_git(gctx: &mut GlobalContext, args: &[&str]) -> CliResult {
+    crate::utils::command::run("git", args, Some(gctx.cwd()))
+}
+
+fn required<'a>(args: &'a ArgMatches, name: &str) -> Result<&'a str, CliError> {
+    args.get_one::<String>(name)
+        .map(String::as_str)
+        .ok_or_else(|| CliError::from(format!("missing required argument `{name}`")))
 }
 
 /// Parse `git remote get-url <remote>` into (owner, repo)
