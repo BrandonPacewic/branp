@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::errors::CliError;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct PullRequest {
     pub head: String,
     pub number: u64,

@@ -125,6 +125,10 @@ impl Shell {
     pub fn set_verbosity(&mut self, verbosity: Verbosity) {
         self.verbosity = verbosity;
     }
+
+    pub fn is_quiet(&self) -> bool {
+        self.verbosity == Verbosity::Quiet
+    }
 }
 
 #[derive(PartialEq)]
