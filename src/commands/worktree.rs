@@ -1,7 +1,10 @@
 //! Git worktree helpers.
 
+use std::collections::HashSet;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
@@ -157,80 +160,121 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
 }
 
 fn list(gctx: &mut GlobalContext, repo: &Repo, pr_lookup: bool) -> CliResult {
+    if gctx.shell().is_quiet() {
+        return Ok(());
+    }
+
     let worktrees = worktrees(&repo.base)?;
     let path_root = common_parent(&worktrees);
     let verbose = gctx.is_verbose();
-    let pr_numbers = if pr_lookup {
-        crate::utils::gh::open_pull_requests(&repo.base).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let mut rows = Vec::new();
+    let remote_branches = remote_branches(&repo.base).unwrap_or_default();
+    let tmux_sessions: HashSet<_> = crate::utils::tmux::sessions()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let mut row_handles = Vec::new();
 
     for worktree in worktrees {
-        let branch = worktree.branch.as_deref().unwrap_or("detached");
-        let status = status_summary(&worktree.path)?;
-        let dirty = status.is_dirty();
-        let base = worktree.path == repo.base;
-        let remote_exists = worktree
-            .branch
-            .as_deref()
-            .is_some_and(|branch| remote_branch_exists(&repo.base, branch).unwrap_or(false));
-        let remote_gone = !base
-            && worktree
+        let path_root = path_root.clone();
+        let repo_base = repo.base.clone();
+        let default_branch = repo.default_branch.clone();
+        let remote_branches = remote_branches.clone();
+        let tmux_sessions = tmux_sessions.clone();
+
+        row_handles.push(thread::spawn(move || {
+            let branch = worktree.branch.as_deref().unwrap_or("detached");
+            let status = status_summary(&worktree.path)?;
+            let dirty = status.is_dirty();
+            let base = worktree.path == repo_base;
+            let remote_exists = worktree
                 .branch
                 .as_deref()
-                .is_some_and(|branch| branch != repo.default_branch)
-            && !remote_exists;
-        let pr = worktree
-            .branch
-            .as_deref()
-            .and_then(|branch| pr_numbers.iter().find(|pr| pr.head == branch))
-            .map(|pr| (pr.number, pr.url.clone()));
-        let has_submodules = has_submodules(&worktree.path);
-        let tmux_session = repo
-            .name_from_path(&worktree.path)
-            .map(|name| repo.session_name(&name))
-            .filter(|session| crate::utils::tmux::has_session(session).unwrap_or(false));
+                .is_some_and(|branch| remote_branches.contains(branch));
+            let remote_gone = !base
+                && worktree
+                    .branch
+                    .as_deref()
+                    .is_some_and(|branch| branch != default_branch)
+                && !remote_exists;
+            let has_submodules = has_submodules(&worktree.path);
+            let tmux_session = name_from_worktree_path(&repo_base, &worktree.path)
+                .map(|name| session_name_for(&repo_base, &name))
+                .filter(|session| tmux_sessions.contains(session));
 
-        rows.push(WorktreeRow {
-            path: display_path(&worktree.path, &path_root),
-            branch: branch.to_string(),
-            head: worktree
-                .head
-                .as_deref()
-                .and_then(|head| head.get(..7))
-                .unwrap_or("")
-                .to_string(),
-            dirty,
-            remote_gone,
-            remote_exists,
-            base,
-            verbose,
-            pr,
-            has_submodules,
-            tmux_session,
-            status,
-        });
+            Ok::<_, CliError>(WorktreeRow {
+                path: display_path(&worktree.path, &path_root),
+                branch: branch.to_string(),
+                head: worktree
+                    .head
+                    .as_deref()
+                    .and_then(|head| head.get(..7))
+                    .unwrap_or("")
+                    .to_string(),
+                dirty,
+                remote_gone,
+                remote_exists,
+                base,
+                verbose,
+                has_submodules,
+                tmux_session,
+                status,
+            })
+        }));
     }
 
-    let [path_width, branch_width, head_width] = crate::utils::table::column_widths(
-        rows.iter()
-            .map(|row| [row.path.as_str(), row.branch.as_str(), row.head.as_str()]),
-    );
-    let mut badge_widths = [0; 6];
-    for row in &rows {
-        let badges = row.badges();
-        for (index, width) in badges.widths().into_iter().enumerate() {
-            badge_widths[index] = badge_widths[index].max(width);
+    let rows: Vec<_> = row_handles
+        .into_iter()
+        .map(|handle| {
+            handle
+                .join()
+                .map_err(|_| CliError::from("worktree status lookup panicked"))?
+        })
+        .collect::<Result<_, CliError>>()?;
+
+    if !pr_lookup {
+        for line in render_worktree_rows(&rows, PrRender::Disabled) {
+            gctx.shell().note(line);
         }
+        return Ok(());
     }
 
-    for row in rows {
-        gctx.shell()
-            .note(row.format(path_width, branch_width, head_width, badge_widths));
+    if !crate::utils::terminal::supports_dynamic_lines() {
+        let pr_numbers = crate::utils::gh::open_pull_requests(&repo.base).unwrap_or_default();
+        for line in render_worktree_rows(&rows, PrRender::Resolved(&pr_numbers)) {
+            gctx.shell().note(line);
+        }
+        return Ok(());
     }
 
+    let repo_base = repo.base.clone();
+    let pr_handle = thread::spawn(move || crate::utils::gh::open_pull_requests(&repo_base));
+    let spinner = ['-', '\\', '|', '/'];
+    let mut frame = crate::utils::terminal::DynamicLines::print(&render_worktree_rows(
+        &rows,
+        PrRender::Loading(spinner[0]),
+    ))?;
+    let mut tick = 1;
+
+    let pr_numbers = loop {
+        if pr_handle.is_finished() {
+            break pr_handle
+                .join()
+                .map_err(|_| CliError::from("GitHub pull request lookup panicked"))?
+                .unwrap_or_default();
+        }
+
+        thread::sleep(Duration::from_millis(120));
+        frame.replace(&render_worktree_rows(
+            &rows,
+            PrRender::Loading(spinner[tick % spinner.len()]),
+        ))?;
+        tick += 1;
+    };
+
+    frame.replace(&render_worktree_rows(
+        &rows,
+        PrRender::Resolved(&pr_numbers),
+    ))?;
     Ok(())
 }
 
@@ -406,19 +450,26 @@ impl Repo {
     }
 
     fn session_name(&self, name: &str) -> String {
-        let repo_name = self
-            .base
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("worktree");
-        format!("{repo_name}-{name}")
+        session_name_for(&self.base, name)
     }
 
     fn name_from_path(&self, path: &Path) -> Option<String> {
-        path.to_str()?
-            .strip_prefix(&format!("{}-", self.base.display()))
-            .map(str::to_string)
+        name_from_worktree_path(&self.base, path)
     }
+}
+
+fn session_name_for(base: &Path, name: &str) -> String {
+    let repo_name = base
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("worktree");
+    format!("{repo_name}-{name}")
+}
+
+fn name_from_worktree_path(base: &Path, path: &Path) -> Option<String> {
+    path.to_str()?
+        .strip_prefix(&format!("{}-", base.display()))
+        .map(str::to_string)
 }
 
 struct Worktree {
@@ -505,14 +556,13 @@ struct WorktreeRow {
     remote_exists: bool,
     base: bool,
     verbose: bool,
-    pr: Option<(u64, String)>,
     has_submodules: bool,
     tmux_session: Option<String>,
     status: StatusSummary,
 }
 
 impl WorktreeRow {
-    fn badges(&self) -> WorktreeBadges {
+    fn badges(&self, pr: DynamicBadge) -> WorktreeBadges {
         let (state, state_color) = if self.base {
             ("base".to_string(), BadgeColor::Green)
         } else if !self.dirty {
@@ -532,12 +582,7 @@ impl WorktreeRow {
             } else {
                 String::new()
             },
-            pr: self
-                .pr
-                .as_ref()
-                .map(|(number, _)| format!("PR #{number}"))
-                .unwrap_or_default(),
-            pr_url: self.pr.as_ref().map(|(_, url)| url.clone()),
+            pr,
             submodules: if self.has_submodules && self.verbose {
                 "submodules".to_string()
             } else {
@@ -557,6 +602,7 @@ impl WorktreeRow {
         branch_width: usize,
         head_width: usize,
         badge_widths: [usize; 6],
+        pr: DynamicBadge,
     ) -> String {
         let path = crate::utils::table::pad_cell(&self.path, path_width);
         let path = if self.dirty {
@@ -573,7 +619,7 @@ impl WorktreeRow {
         let head = crate::utils::table::pad_cell(&self.head, head_width);
         let head = color_print::cformat!("<black!>{head}</>");
 
-        let badges = self.badges();
+        let badges = self.badges(pr);
         let badge_cells = [
             color_badge(&badges.state, badge_widths[0], badges.state_color),
             color_badge(&badges.untracked, badge_widths[1], BadgeColor::MagentaBold),
@@ -583,10 +629,10 @@ impl WorktreeRow {
                 color_badge(&badges.remote, badge_widths[2], BadgeColor::Green)
             },
             color_badge_link(
-                &badges.pr,
+                &badges.pr.text,
                 badge_widths[3],
                 BadgeColor::Magenta,
-                badges.pr_url.as_deref(),
+                badges.pr.url.as_deref(),
             ),
             color_badge(&badges.submodules, badge_widths[4], BadgeColor::Yellow),
             color_badge(&badges.tmux, badge_widths[5], BadgeColor::Cyan),
@@ -601,8 +647,7 @@ struct WorktreeBadges {
     state_color: BadgeColor,
     untracked: String,
     remote: String,
-    pr: String,
-    pr_url: Option<String>,
+    pr: DynamicBadge,
     submodules: String,
     tmux: String,
 }
@@ -613,10 +658,90 @@ impl WorktreeBadges {
             self.state.len(),
             self.untracked.len(),
             self.remote.len(),
-            self.pr.len(),
+            self.pr.text.len(),
             self.submodules.len(),
             self.tmux.len(),
         ]
+    }
+}
+
+#[derive(Clone)]
+struct DynamicBadge {
+    text: String,
+    url: Option<String>,
+}
+
+impl DynamicBadge {
+    fn empty() -> Self {
+        Self {
+            text: String::new(),
+            url: None,
+        }
+    }
+
+    fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            url: None,
+        }
+    }
+
+    fn link(text: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            url: Some(url.into()),
+        }
+    }
+}
+
+enum PrRender<'a> {
+    Disabled,
+    Loading(char),
+    Resolved(&'a [crate::utils::gh::PullRequest]),
+}
+
+fn render_worktree_rows(rows: &[WorktreeRow], pr_render: PrRender<'_>) -> Vec<String> {
+    let pr_badges: Vec<_> = rows.iter().map(|row| row.pr_badge(&pr_render)).collect();
+    let [path_width, branch_width, head_width] = crate::utils::table::column_widths(
+        rows.iter()
+            .map(|row| [row.path.as_str(), row.branch.as_str(), row.head.as_str()]),
+    );
+    let mut badge_widths = [0; 6];
+
+    for (row, pr) in rows.iter().zip(&pr_badges) {
+        let badges = row.badges(pr.clone());
+        for (index, width) in badges.widths().into_iter().enumerate() {
+            badge_widths[index] = badge_widths[index].max(width);
+        }
+    }
+
+    rows.iter()
+        .zip(pr_badges)
+        .map(|(row, pr)| row.format(path_width, branch_width, head_width, badge_widths, pr))
+        .collect()
+}
+
+impl WorktreeRow {
+    fn pr_badge(&self, pr_render: &PrRender<'_>) -> DynamicBadge {
+        match pr_render {
+            PrRender::Disabled => DynamicBadge::empty(),
+            PrRender::Loading(spinner) => {
+                if self.can_have_pr() {
+                    DynamicBadge::text(format!("PR {spinner}"))
+                } else {
+                    DynamicBadge::empty()
+                }
+            }
+            PrRender::Resolved(prs) => prs
+                .iter()
+                .find(|pr| pr.head == self.branch)
+                .map(|pr| DynamicBadge::link(format!("PR #{}", pr.number), pr.url.clone()))
+                .unwrap_or_else(DynamicBadge::empty),
+        }
+    }
+
+    fn can_have_pr(&self) -> bool {
+        !self.base && self.branch != "detached"
     }
 }
 
@@ -748,6 +873,21 @@ fn remote_branch_exists(repo: &Path, branch: &str) -> Result<bool, CliError> {
             &format!("refs/remotes/origin/{branch}"),
         ],
     )
+}
+
+fn remote_branches(repo: &Path) -> Result<HashSet<String>, CliError> {
+    Ok(git_output(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname:strip=3)",
+            "refs/remotes/origin",
+        ],
+    )?
+    .lines()
+    .filter(|branch| !branch.is_empty() && *branch != "HEAD")
+    .map(str::to_string)
+    .collect())
 }
 
 fn delete_local_branch(repo: &Path, branch: &str, force: bool) -> CliResult {

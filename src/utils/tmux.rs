@@ -13,6 +13,15 @@ pub fn has_session(session: &str) -> Result<bool, CliError> {
     crate::utils::command::status("tmux", &["has-session", "-t", session], None)
 }
 
+pub fn sessions() -> Result<Vec<String>, CliError> {
+    Ok(
+        crate::utils::command::output("tmux", &["list-sessions", "-F", "#{session_name}"], None)?
+            .lines()
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
 pub fn ensure_session(gctx: &mut GlobalContext, session: &str, cwd: &Path) -> CliResult {
     if has_session(session)? {
         return Ok(());
