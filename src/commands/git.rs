@@ -8,6 +8,9 @@ use crate::errors::{CliError, CliResult};
 use crate::utils::browser;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use serde::Deserialize;
+use std::collections::BTreeMap;
+use std::process::Output;
+use std::time::Duration;
 
 pub fn command() -> Command {
     Command::new("git")
@@ -34,6 +37,29 @@ pub fn command() -> Command {
                         .long("remote")
                         .help("Git remote to use")
                         .default_value("origin"),
+                ),
+        )
+        .subcommand(
+            Command::new("check")
+                .about("Monitor PR checks until the PR is merged")
+                .arg(
+                    Arg::new("target")
+                        .help("Pull request number, URL, or branch; defaults to the current branch PR")
+                        .value_name("PR|URL|BRANCH"),
+                )
+                .arg(
+                    Arg::new("interval")
+                        .short('i')
+                        .long("interval")
+                        .help("Refresh interval in seconds")
+                        .default_value("5")
+                        .value_parser(clap::value_parser!(u64).range(1..)),
+                )
+                .arg(
+                    Arg::new("once")
+                        .long("once")
+                        .help("Show the current PR status and checks without waiting for merge")
+                        .action(ArgAction::SetTrue),
                 ),
         )
         .subcommand(
@@ -89,6 +115,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     match args.subcommand() {
         Some(("coauthor", sub)) => coauthor(gctx, sub),
         Some(("prs", sub)) => prs(gctx, sub),
+        Some(("check", sub)) => check(gctx, sub),
         Some(("fork", sub)) => fork(gctx, sub),
         Some(("open", sub)) => open(gctx, sub),
         _ => Err(CliError::from("no `git` subcommand provided")),
@@ -143,6 +170,260 @@ fn prs(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     }
 
     Ok(())
+}
+
+fn check(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
+    let target = args.get_one::<String>("target").map(String::as_str);
+    let interval = *args.get_one::<u64>("interval").unwrap();
+    let once = args.get_flag("once");
+    let pr = current_pr(gctx, target)?;
+
+    print_pr_status(gctx, &pr);
+    if once {
+        let checks = current_checks(gctx, target)?;
+        print_check_summary(gctx, &checks);
+        return Ok(());
+    }
+
+    wait_for_merge(gctx, target, &pr, interval)
+}
+
+fn print_pr_status(gctx: &mut GlobalContext, pr: &PrStatus) {
+    let draft = if pr.is_draft {
+        format!(" {}", color_print::cformat!("<black!>[DRAFT]</>"))
+    } else {
+        String::new()
+    };
+    gctx.shell().note(format!(
+        "{}{} {} -> {}",
+        crate::utils::terminal::hyperlink(&colored_pr_label(pr.number), &pr.url),
+        draft,
+        color_print::cformat!("<cyan>{}</>", pr.head_ref_name),
+        color_print::cformat!("<black!>{}</>", pr.base_ref_name)
+    ));
+    gctx.shell().note(format!("  Title : {}", pr.title));
+    gctx.shell()
+        .note(format!("  State : {}", pr.status_label()));
+    if let Some(merged_at) = &pr.merged_at {
+        gctx.shell().note(format!(
+            "  Merged: {}",
+            color_print::cformat!("<black!>{merged_at}</>")
+        ));
+    }
+}
+
+fn wait_for_merge(
+    gctx: &mut GlobalContext,
+    target: Option<&str>,
+    initial_pr: &PrStatus,
+    interval: u64,
+) -> CliResult {
+    if initial_pr.is_merged() {
+        gctx.shell().note(merged_message(
+            initial_pr.number,
+            initial_pr.merged_at.as_deref(),
+        ));
+        return Ok(());
+    }
+
+    let mut monitor = PrMonitor::new(initial_pr.clone(), current_checks(gctx, target)?);
+    let mut frame = crate::utils::terminal::DynamicRenderLoop::start(&monitor.render(Some('-')))?;
+
+    loop {
+        for _ in 0..spinner_ticks(interval) {
+            std::thread::sleep(frame.tick_interval());
+            frame.advance(&monitor.render(Some(frame.spinner())))?;
+        }
+
+        let pr = current_pr(gctx, target)?;
+        let checks = current_checks(gctx, target)?;
+        let is_merged = pr.is_merged();
+        let is_closed = pr.state == "CLOSED";
+        let merged_at = pr.merged_at.clone();
+        let number = pr.number;
+
+        monitor.update(pr, checks);
+        frame.replace(&monitor.render(Some(frame.spinner())))?;
+
+        if is_merged {
+            frame.replace(&monitor.render(None))?;
+            gctx.shell()
+                .note(merged_message(number, merged_at.as_deref()));
+            return Ok(());
+        }
+
+        if is_closed {
+            frame.replace(&monitor.render(None))?;
+            return Err(CliError::from(format!(
+                "PR #{number} was closed without merging"
+            )));
+        }
+    }
+}
+
+fn spinner_ticks(interval: u64) -> u64 {
+    let tick_ms = 120;
+    (Duration::from_secs(interval).as_millis() as u64 / tick_ms).max(1)
+}
+
+fn merged_message(number: u64, merged_at: Option<&str>) -> String {
+    format!(
+        "{} {}{}",
+        colored_pr_label(number),
+        color_print::cformat!("<magenta,bold>merged</>"),
+        merged_at
+            .map(|merged_at| format!(" at {}", color_print::cformat!("<black!>{merged_at}</>")))
+            .unwrap_or_default()
+    )
+}
+
+fn colored_pr_label(number: u64) -> String {
+    color_print::cformat!("<cyan,bold>PR #{number}</>")
+}
+
+fn current_pr(gctx: &mut GlobalContext, target: Option<&str>) -> Result<PrStatus, CliError> {
+    let mut args = vec![
+        "pr",
+        "view",
+        "--json",
+        "number,title,url,state,isDraft,mergeStateStatus,baseRefName,headRefName,mergedAt",
+    ];
+    if let Some(target) = target {
+        args.insert(2, target);
+    }
+
+    let output = crate::utils::command::output("gh", &args, Some(gctx.cwd())).map_err(|e| {
+        let subject = target.unwrap_or("the current branch");
+        CliError::from(format!(
+            "failed to find a pull request for {subject}: {}",
+            e.message
+        ))
+    })?;
+
+    serde_json::from_str(&output)
+        .map_err(|e| CliError::from(format!("failed to parse GitHub PR status: {e}")))
+}
+
+fn current_checks(
+    gctx: &mut GlobalContext,
+    target: Option<&str>,
+) -> Result<Vec<PrCheck>, CliError> {
+    let mut args = vec![
+        "pr",
+        "checks",
+        "--json",
+        "bucket,name,state,workflow,completedAt,link",
+    ];
+    if let Some(target) = target {
+        args.insert(2, target);
+    }
+
+    let output = std::process::Command::new("gh")
+        .args(&args)
+        .current_dir(gctx.cwd())
+        .output()?;
+
+    if !output.status.success() && output.status.code() != Some(8) {
+        return Err(command_output_error("gh", &args, &output));
+    }
+
+    serde_json::from_slice(&output.stdout)
+        .map_err(|e| CliError::from(format!("failed to parse GitHub PR checks: {e}")))
+}
+
+fn print_check_summary(gctx: &mut GlobalContext, checks: &[PrCheck]) {
+    gctx.shell()
+        .note(format!("  Checks: {}", check_summary(checks)));
+    for check in checks {
+        gctx.shell().note(format!(
+            "    {} {}",
+            check.bucket_symbol(),
+            check.display_label()
+        ));
+    }
+}
+
+fn check_summary(checks: &[PrCheck]) -> String {
+    if checks.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut buckets = BTreeMap::new();
+    for check in checks {
+        *buckets.entry(check.bucket.as_str()).or_insert(0usize) += 1;
+    }
+
+    ["pending", "fail", "cancel", "pass", "skipping"]
+        .into_iter()
+        .filter_map(|bucket| buckets.get(bucket).map(|count| (*count, bucket)))
+        .map(|(count, bucket)| colored_check_bucket_count(bucket, count))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn active_checks(checks: &[PrCheck]) -> String {
+    let names = checks
+        .iter()
+        .filter(|check| check.bucket == "pending")
+        .take(3)
+        .map(PrCheck::display_name)
+        .collect::<Vec<_>>();
+
+    if names.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " | {} {}",
+            color_print::cformat!("<yellow>waiting on</>"),
+            names.join(", ")
+        )
+    }
+}
+
+fn command_output_error(program: &str, args: &[&str], output: &Output) -> CliError {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = if !stderr.trim().is_empty() {
+        stderr.trim()
+    } else {
+        stdout.trim()
+    };
+
+    CliError::from(format!(
+        "{} {} failed{}{}",
+        program,
+        args.join(" "),
+        if detail.is_empty() { "" } else { ": " },
+        detail
+    ))
+}
+
+struct PrMonitor {
+    pr: PrStatus,
+    checks: Vec<PrCheck>,
+}
+
+impl PrMonitor {
+    fn new(pr: PrStatus, checks: Vec<PrCheck>) -> Self {
+        Self { pr, checks }
+    }
+
+    fn update(&mut self, pr: PrStatus, checks: Vec<PrCheck>) {
+        self.pr = pr;
+        self.checks = checks;
+    }
+
+    fn render(&self, spinner: Option<char>) -> Vec<String> {
+        let marker = spinner.unwrap_or(' ');
+        vec![format!(
+            "{} {} {} | checks: {}{}",
+            color_print::cformat!("<yellow>{marker}</>"),
+            colored_pr_label(self.pr.number),
+            self.pr.status_label(),
+            check_summary(&self.checks),
+            active_checks(&self.checks)
+        )]
+    }
 }
 
 fn fork(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
@@ -489,4 +770,144 @@ struct PullRequest {
     draft: bool,
     assignees: Vec<SimpleUser>,
     requested_reviewers: Vec<SimpleUser>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrStatus {
+    number: u64,
+    title: String,
+    url: String,
+    state: String,
+    is_draft: bool,
+    merge_state_status: Option<String>,
+    base_ref_name: String,
+    head_ref_name: String,
+    merged_at: Option<String>,
+}
+
+impl PrStatus {
+    fn is_merged(&self) -> bool {
+        self.state == "MERGED" || self.merged_at.is_some()
+    }
+
+    fn status_label(&self) -> String {
+        if self.is_merged() {
+            return color_print::cformat!("<magenta,bold>merged</>");
+        }
+
+        let state = match self.state.as_str() {
+            "OPEN" => color_print::cformat!("<cyan>open</>"),
+            "CLOSED" => color_print::cformat!("<red,bold>closed</>"),
+            other => other.to_string(),
+        };
+
+        match self.merge_state_status.as_deref() {
+            Some("BLOCKED") => format!("{state}, {}", color_print::cformat!("<yellow>blocked</>")),
+            Some("BEHIND") => {
+                format!(
+                    "{state}, {}",
+                    color_print::cformat!("<yellow>behind base</>")
+                )
+            }
+            Some("CLEAN") => {
+                format!(
+                    "{state}, {}",
+                    color_print::cformat!("<green>ready to merge</>")
+                )
+            }
+            Some("DIRTY") => {
+                format!(
+                    "{state}, {}",
+                    color_print::cformat!("<red,bold>has conflicts</>")
+                )
+            }
+            Some("DRAFT") => format!("{state}, {}", color_print::cformat!("<black!>draft</>")),
+            Some("HAS_HOOKS") => {
+                format!(
+                    "{state}, {}",
+                    color_print::cformat!("<yellow>waiting on hooks</>")
+                )
+            }
+            Some("UNKNOWN") | None => state.to_string(),
+            Some(status) => format!(
+                "{state}, {}",
+                color_print::cformat!("<yellow>{}</>", enum_label(status))
+            ),
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrCheck {
+    bucket: String,
+    name: String,
+    state: String,
+    workflow: Option<String>,
+}
+
+impl PrCheck {
+    fn display_name(&self) -> String {
+        match self.workflow.as_deref() {
+            Some(workflow) if !workflow.is_empty() => format!("{workflow} / {}", self.name),
+            _ => self.name.clone(),
+        }
+    }
+
+    fn display_label(&self) -> String {
+        format!(
+            "{} ({})",
+            self.display_name(),
+            colored_check_state(&self.bucket, &self.state)
+        )
+    }
+
+    fn bucket_symbol(&self) -> String {
+        match self.bucket.as_str() {
+            "pass" => color_print::cformat!("<green,bold>PASS</>"),
+            "fail" => color_print::cformat!("<red,bold>FAIL</>"),
+            "pending" => color_print::cformat!("<yellow,bold>WAIT</>"),
+            "skipping" => color_print::cformat!("<black!,bold>SKIP</>"),
+            "cancel" => color_print::cformat!("<red>CANCEL</>"),
+            _ => color_print::cformat!("<black!>INFO</>"),
+        }
+    }
+}
+
+fn colored_check_bucket_count(bucket: &str, count: usize) -> String {
+    let label = match bucket {
+        "pass" => "passed",
+        "fail" => "failed",
+        "pending" => "pending",
+        "skipping" => "skipped",
+        "cancel" => "cancelled",
+        _ => "unknown",
+    };
+
+    let value = format!("{count} {label}");
+    match bucket {
+        "pass" => color_print::cformat!("<green>{value}</>"),
+        "fail" => color_print::cformat!("<red,bold>{value}</>"),
+        "pending" => color_print::cformat!("<yellow>{value}</>"),
+        "skipping" => color_print::cformat!("<black!>{value}</>"),
+        "cancel" => color_print::cformat!("<red>{value}</>"),
+        _ => color_print::cformat!("<black!>{value}</>"),
+    }
+}
+
+fn colored_check_state(bucket: &str, state: &str) -> String {
+    let label = enum_label(state);
+    match bucket {
+        "pass" => color_print::cformat!("<green>{label}</>"),
+        "fail" => color_print::cformat!("<red,bold>{label}</>"),
+        "pending" => color_print::cformat!("<yellow>{label}</>"),
+        "skipping" => color_print::cformat!("<black!>{label}</>"),
+        "cancel" => color_print::cformat!("<red>{label}</>"),
+        _ => color_print::cformat!("<black!>{label}</>"),
+    }
+}
+
+fn enum_label(value: &str) -> String {
+    value.to_ascii_lowercase().replace('_', " ")
 }
