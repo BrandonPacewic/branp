@@ -10,6 +10,7 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::context::GlobalContext;
 use crate::errors::{CliError, CliResult};
+use crate::utils::git;
 
 pub fn command() -> Command {
     Command::new("worktree")
@@ -145,7 +146,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
             !sub.get_flag("no-tmux"),
         ),
         Some(("prune", _)) => {
-            run_git(&repo.base, &["worktree", "prune"])?;
+            git::run(&repo.base, &["worktree", "prune"])?;
             Ok(())
         }
         Some(("gone", sub)) => remove_gone(
@@ -195,7 +196,7 @@ fn resolve_worktree_rows(
     path_root: &Path,
     verbose: bool,
 ) -> Result<Vec<WorktreeRow>, CliError> {
-    let remote_branches = remote_branches(&repo.base).unwrap_or_default();
+    let remote_branches = git::remote_branches(&repo.base, "origin").unwrap_or_default();
     let tmux_sessions: HashSet<_> = crate::utils::tmux::sessions()
         .unwrap_or_default()
         .into_iter()
@@ -269,7 +270,7 @@ fn render_worktree_rows_dynamic(
         let repo_base = repo.base.clone();
         thread::spawn(move || {
             let _ = tx.send(WorktreeUpdate::RemoteBranches(
-                remote_branches(&repo_base).unwrap_or_default(),
+                git::remote_branches(&repo_base, "origin").unwrap_or_default(),
             ));
         });
         pending += 1;
@@ -343,17 +344,17 @@ fn create(
     }
 
     if fetch {
-        let _ = run_git(&repo.base, &["fetch", "origin", branch]);
+        let _ = git::run(&repo.base, &["fetch", "origin", branch]);
     }
 
-    if local_branch_exists(&repo.base, branch)? {
+    if git::local_branch_exists(&repo.base, branch)? {
         return Err(CliError::from(format!(
             "local branch already exists: {branch}"
         )));
     }
 
-    if remote_branch_exists(&repo.base, branch)? {
-        run_git(
+    if git::remote_branch_exists(&repo.base, "origin", branch)? {
+        git::run(
             &repo.base,
             &[
                 "worktree",
@@ -365,14 +366,14 @@ fn create(
             ],
         )?;
     } else {
-        run_git(
+        git::run(
             &repo.base,
             &["worktree", "add", path_arg(&target).as_str(), "-b", branch],
         )?;
     }
 
     if submodules {
-        run_git(&target, &["submodule", "update", "--init", "--recursive"])?;
+        git::run(&target, &["submodule", "update", "--init", "--recursive"])?;
     }
 
     if tmux {
@@ -399,7 +400,7 @@ fn remove(
         )));
     }
 
-    let branch = current_branch(&target)?;
+    let branch = git::current_branch(&target)?;
     let confirmed_lossy_remove = confirm_lossy_remove(gctx, &target)?;
     deinit_submodules(gctx, &target)?;
 
@@ -409,12 +410,12 @@ fn remove(
     }
     let target_arg = path_arg(&target);
     remove_args.push(target_arg.as_str());
-    run_git(&repo.base, &remove_args)?;
-    run_git(&repo.base, &["worktree", "prune"])?;
+    git::run(&repo.base, &remove_args)?;
+    git::run(&repo.base, &["worktree", "prune"])?;
 
     if delete_branch {
         if let Some(branch) = branch {
-            delete_local_branch(&repo.base, &branch, force)?;
+            git::delete_local_branch(&repo.base, &branch, force)?;
         }
     }
 
@@ -432,7 +433,7 @@ fn remove_gone(
     force: bool,
     tmux: bool,
 ) -> CliResult {
-    run_git(&repo.base, &["fetch", "--prune"])?;
+    git::run(&repo.base, &["fetch", "--prune"])?;
     let worktrees = worktrees(&repo.base)?;
 
     for worktree in worktrees {
@@ -443,7 +444,9 @@ fn remove_gone(
         let Some(branch) = worktree.branch else {
             continue;
         };
-        if branch == repo.default_branch || remote_branch_exists(&repo.base, &branch)? {
+        if branch == repo.default_branch
+            || git::remote_branch_exists(&repo.base, "origin", &branch)?
+        {
             continue;
         }
 
@@ -472,13 +475,13 @@ struct Repo {
 
 impl Repo {
     fn discover(cwd: &Path) -> Result<Self, CliError> {
-        let root = PathBuf::from(git_output(cwd, &["rev-parse", "--show-toplevel"])?.trim());
+        let root = PathBuf::from(git::output(cwd, &["rev-parse", "--show-toplevel"])?.trim());
         let base = worktrees(&root)?
             .into_iter()
             .next()
             .map(|w| w.path)
             .ok_or("could not determine base worktree")?;
-        let default_branch = git_output(
+        let default_branch = git::output(
             &base,
             &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
         )
@@ -526,7 +529,7 @@ struct Worktree {
 }
 
 fn worktrees(repo: &Path) -> Result<Vec<Worktree>, CliError> {
-    let output = git_output(repo, &["worktree", "list", "--porcelain"])?;
+    let output = git::output(repo, &["worktree", "list", "--porcelain"])?;
     let mut items = Vec::new();
     let mut path = None;
     let mut head = None;
@@ -1004,7 +1007,7 @@ fn display_path(path: &Path, root: &Path) -> String {
 }
 
 fn status_summary(repo: &Path) -> Result<StatusSummary, CliError> {
-    let output = git_output(repo, &["status", "--porcelain"])?;
+    let output = git::output(repo, &["status", "--porcelain"])?;
     let mut summary = StatusSummary::default();
 
     for line in output.lines() {
@@ -1030,59 +1033,6 @@ fn status_summary(repo: &Path) -> Result<StatusSummary, CliError> {
     }
 
     Ok(summary)
-}
-
-fn current_branch(repo: &Path) -> Result<Option<String>, CliError> {
-    let output = git_output(repo, &["branch", "--show-current"])?;
-    let branch = output.trim();
-    Ok((!branch.is_empty()).then(|| branch.to_string()))
-}
-
-fn local_branch_exists(repo: &Path, branch: &str) -> Result<bool, CliError> {
-    git_status(
-        repo,
-        &[
-            "show-ref",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{branch}"),
-        ],
-    )
-}
-
-fn remote_branch_exists(repo: &Path, branch: &str) -> Result<bool, CliError> {
-    git_status(
-        repo,
-        &[
-            "show-ref",
-            "--quiet",
-            &format!("refs/remotes/origin/{branch}"),
-        ],
-    )
-}
-
-fn remote_branches(repo: &Path) -> Result<HashSet<String>, CliError> {
-    Ok(git_output(
-        repo,
-        &[
-            "for-each-ref",
-            "--format=%(refname:strip=3)",
-            "refs/remotes/origin",
-        ],
-    )?
-    .lines()
-    .filter(|branch| !branch.is_empty() && *branch != "HEAD")
-    .map(str::to_string)
-    .collect())
-}
-
-fn delete_local_branch(repo: &Path, branch: &str, force: bool) -> CliResult {
-    if !local_branch_exists(repo, branch)? {
-        return Ok(());
-    }
-
-    let flag = if force { "-D" } else { "-d" };
-    run_git(repo, &["branch", flag, branch])
 }
 
 fn confirm_lossy_remove(gctx: &mut GlobalContext, repo: &Path) -> Result<bool, CliError> {
@@ -1126,7 +1076,7 @@ fn removal_risk_changes(repo: &Path) -> Result<Vec<String>, CliError> {
 }
 
 fn collect_status_changes(repo: &Path, prefix: Option<&str>) -> Result<Vec<String>, CliError> {
-    let output = git_output(repo, &["status", "--porcelain"])?;
+    let output = git::output(repo, &["status", "--porcelain"])?;
     let mut changes = Vec::new();
 
     for line in output.lines() {
@@ -1158,7 +1108,7 @@ fn submodule_paths(repo: &Path) -> Result<Vec<String>, CliError> {
         return Ok(Vec::new());
     }
 
-    let output = git_output(
+    let output = git::output(
         repo,
         &[
             "config",
@@ -1180,25 +1130,13 @@ fn deinit_submodules(gctx: &mut GlobalContext, repo: &Path) -> CliResult {
         return Ok(());
     }
 
-    run_git(repo, &["submodule", "deinit", "--force", "--all"])?;
+    git::run(repo, &["submodule", "deinit", "--force", "--all"])?;
     gctx.shell().note("submodules: deinitialized");
     Ok(())
 }
 
 fn has_submodules(repo: &Path) -> bool {
     repo.join(".gitmodules").is_file()
-}
-
-fn run_git(repo: &Path, args: &[&str]) -> CliResult {
-    crate::utils::command::run("git", args, Some(repo))
-}
-
-fn git_output(repo: &Path, args: &[&str]) -> Result<String, CliError> {
-    crate::utils::command::output("git", args, Some(repo))
-}
-
-fn git_status(repo: &Path, args: &[&str]) -> Result<bool, CliError> {
-    crate::utils::command::status("git", args, Some(repo))
 }
 
 fn required<'a>(args: &'a ArgMatches, name: &str) -> Result<&'a str, CliError> {

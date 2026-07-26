@@ -16,6 +16,7 @@ mod completions;
 mod context;
 mod doctor;
 mod errors;
+mod ops;
 mod utils;
 mod version;
 
