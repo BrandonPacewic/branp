@@ -81,6 +81,38 @@ pub fn command() -> Command {
                 ),
         )
         .subcommand(
+            Command::new("ignore")
+                .about("Add repo-local ignore patterns without modifying .gitignore")
+                .arg(
+                    Arg::new("patterns")
+                        .help("Paths or patterns to ignore locally")
+                        .num_args(1..)
+                        .value_name("PATH|PATTERN"),
+                )
+                .arg(
+                    Arg::new("raw")
+                        .long("raw")
+                        .help("Treat arguments as literal gitignore patterns")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("list")
+                        .long("list")
+                        .short('l')
+                        .help("List repo-local ignore patterns")
+                        .conflicts_with_all(["patterns", "remove", "raw"])
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("remove")
+                        .long("remove")
+                        .short('r')
+                        .help("Remove matching repo-local ignore patterns")
+                        .requires("patterns")
+                        .action(ArgAction::SetTrue),
+                ),
+        )
+        .subcommand(
             Command::new("open")
                 .about("Open this GitHub repo, issue, pull request, or commit in a browser")
                 .arg(
@@ -112,6 +144,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
         Some(("prs", sub)) => prs(gctx, sub),
         Some(("check", sub)) => check(gctx, sub),
         Some(("fork", sub)) => fork(gctx, sub),
+        Some(("ignore", sub)) => ignore(gctx, sub),
         Some(("open", sub)) => open(gctx, sub),
         _ => Err(CliError::from("no `git` subcommand provided")),
     }
@@ -147,6 +180,19 @@ fn fork(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
         branch: args.get_one::<String>("branch").map(String::as_str),
     };
     ops::fork(gctx, &options)
+}
+
+fn ignore(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
+    let options = ops::IgnoreOptions {
+        patterns: args
+            .get_many::<String>("patterns")
+            .map(|values| values.map(String::as_str).collect())
+            .unwrap_or_default(),
+        raw: args.get_flag("raw"),
+        list: args.get_flag("list"),
+        remove: args.get_flag("remove"),
+    };
+    ops::ignore(gctx, &options)
 }
 
 fn open(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
