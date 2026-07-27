@@ -2,26 +2,21 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use branp_cli::context::GlobalContext;
+use branp_cli::errors::{CliError, CliResult};
+use branp_cli::version::get_version_info;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use clap_complete::{CompleteEnv, Shell};
 
-use crate::commands::branp_exec;
+pub use branp_cli::{context, doctor, errors, ops, utils};
+
 use crate::completions::completion_script;
-use crate::context::GlobalContext;
-use crate::errors::{CliError, CliResult};
-use crate::version::get_version_info;
 
 mod commands;
 mod completions;
-mod context;
-mod doctor;
-mod errors;
-mod ops;
-mod utils;
-mod version;
 
 fn main() {
-    let mut gctx = match GlobalContext::default() {
+    let mut gctx = match GlobalContext::from_env() {
         Ok(gctx) => gctx,
         Err(e) => {
             let mut shell = context::Shell::new();
@@ -136,7 +131,7 @@ fn expand_aliases(
     mut already_expanded: Vec<String>,
 ) -> Result<(ArgMatches, GlobalArgs), CliError> {
     if let Some((cmd, subcommand_args)) = args.subcommand() {
-        let exec = branp_exec(cmd);
+        let exec = commands::branp_exec(cmd);
         let aliased_cmd = aliased_command(cmd);
 
         match (exec, aliased_cmd) {

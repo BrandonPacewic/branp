@@ -11,6 +11,10 @@ edition = "2021"
 name = "bp"
 path = "src/main.rs"
 
+[lib]
+name = "branp_cli"
+path = "src/lib.rs"
+
 [dependencies]
 clap = { version = "4.5.9", features = ["derive"] }
 clap_complete = { version = "4.5.56", features = ["unstable-dynamic"] }

@@ -29,6 +29,15 @@ pub struct ClocOptions<'a> {
     pub commas: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BenchCountReport {
+    pub text_files: u64,
+    pub ignored_files: u64,
+    pub blank: u64,
+    pub comment: u64,
+    pub code: u64,
+}
+
 #[derive(Clone, Copy)]
 struct RenderOptions {
     commas: bool,
@@ -97,6 +106,18 @@ pub fn cloc(gctx: &mut GlobalContext, options: &ClocOptions<'_>) -> CliResult {
     }
 
     Ok(())
+}
+
+pub fn count_paths_for_bench(paths: &[PathBuf]) -> BenchCountReport {
+    let report = count_paths(paths);
+    let total = total_count(&report.by_language);
+    BenchCountReport {
+        text_files: report.stats.text_files,
+        ignored_files: report.stats.ignored_files,
+        blank: total.blank,
+        comment: total.comment,
+        code: total.code,
+    }
 }
 
 fn count_paths(paths: &[PathBuf]) -> CountReport {
