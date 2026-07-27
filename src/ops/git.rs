@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -25,6 +27,13 @@ pub struct ForkOptions<'a> {
     pub remote: &'a str,
     pub url: &'a str,
     pub branch: Option<&'a str>,
+}
+
+pub struct IgnoreOptions<'a> {
+    pub patterns: Vec<&'a str>,
+    pub raw: bool,
+    pub list: bool,
+    pub remove: bool,
 }
 
 pub struct OpenOptions<'a> {
@@ -115,6 +124,30 @@ pub fn fork(gctx: &mut GlobalContext, options: &ForkOptions<'_>) -> CliResult {
     Ok(())
 }
 
+pub fn ignore(gctx: &mut GlobalContext, options: &IgnoreOptions<'_>) -> CliResult {
+    let repo_root = repo_root(gctx.cwd())?;
+    let exclude_path = local_exclude_path(gctx.cwd())?;
+    let contents = read_optional_file(&exclude_path)?;
+
+    if options.list {
+        list_local_ignores(gctx, &contents);
+        return Ok(());
+    }
+
+    if options.patterns.is_empty() {
+        return Err(CliError::from(
+            "expected `bp git ignore <path|pattern>...` or `bp git ignore --list`",
+        ));
+    }
+
+    let patterns = ignore_patterns(gctx.cwd(), &repo_root, options)?;
+    if options.remove {
+        remove_local_ignores(gctx, &exclude_path, &contents, &patterns)
+    } else {
+        add_local_ignores(gctx, &exclude_path, &contents, &patterns)
+    }
+}
+
 pub fn open(gctx: &mut GlobalContext, options: &OpenOptions<'_>) -> CliResult {
     let repo = crate::utils::git::github_remote(gctx.cwd(), options.remote)?;
     let base_url = format!("https://github.com/{}/{}", repo.owner, repo.name);
@@ -131,6 +164,224 @@ pub fn open(gctx: &mut GlobalContext, options: &OpenOptions<'_>) -> CliResult {
         crate::utils::terminal::hyperlink(&url, &url)
     ));
     Ok(())
+}
+
+fn repo_root(cwd: &Path) -> Result<PathBuf, CliError> {
+    let output = crate::utils::git::output(cwd, &["rev-parse", "--show-toplevel"])?;
+    Ok(PathBuf::from(output.trim()))
+}
+
+fn local_exclude_path(cwd: &Path) -> Result<PathBuf, CliError> {
+    let output = crate::utils::git::output(cwd, &["rev-parse", "--git-path", "info/exclude"])?;
+    let path = PathBuf::from(output.trim());
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(cwd.join(path))
+    }
+}
+
+fn read_optional_file(path: &Path) -> Result<String, CliError> {
+    match fs::read_to_string(path) {
+        Ok(contents) => Ok(contents),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn list_local_ignores(gctx: &mut GlobalContext, contents: &str) {
+    let patterns = active_ignore_lines(contents).collect::<Vec<_>>();
+    if patterns.is_empty() {
+        gctx.shell().note("No repo-local ignore patterns found.");
+        return;
+    }
+
+    for pattern in patterns {
+        gctx.shell().note(pattern);
+    }
+}
+
+fn ignore_patterns(
+    cwd: &Path,
+    repo_root: &Path,
+    options: &IgnoreOptions<'_>,
+) -> Result<Vec<String>, CliError> {
+    let mut patterns = Vec::new();
+    for pattern in &options.patterns {
+        let pattern = if options.raw {
+            raw_ignore_pattern(pattern)?
+        } else {
+            path_ignore_pattern(cwd, repo_root, pattern)?
+        };
+        if !patterns.contains(&pattern) {
+            patterns.push(pattern);
+        }
+    }
+    Ok(patterns)
+}
+
+fn raw_ignore_pattern(pattern: &str) -> Result<String, CliError> {
+    let pattern = pattern.trim_end_matches(['\r', '\n']);
+    if pattern.is_empty() {
+        Err(CliError::from("ignore pattern cannot be empty"))
+    } else {
+        Ok(pattern.to_string())
+    }
+}
+
+fn path_ignore_pattern(cwd: &Path, repo_root: &Path, input: &str) -> Result<String, CliError> {
+    let trimmed = input.trim_end_matches(['\r', '\n']);
+    if trimmed.is_empty() {
+        return Err(CliError::from("ignore path cannot be empty"));
+    }
+
+    let path = Path::new(trimmed);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    let absolute = normalize_path(&absolute);
+    let repo_root = normalize_path(repo_root);
+    let relative = absolute.strip_prefix(&repo_root).map_err(|_| {
+        CliError::from(format!(
+            "`{trimmed}` is outside this repo; use --raw to add it as a pattern"
+        ))
+    })?;
+    let mut pattern = path_to_gitignore_pattern(relative)?;
+
+    if pattern.is_empty() {
+        return Err(CliError::from("cannot ignore the repository root"));
+    }
+
+    if path_is_existing_dir(cwd, path) && !pattern.ends_with('/') {
+        pattern.push('/');
+    }
+
+    Ok(pattern)
+}
+
+fn path_is_existing_dir(cwd: &Path, path: &Path) -> bool {
+    if path.is_absolute() {
+        path.is_dir()
+    } else {
+        cwd.join(path).is_dir()
+    }
+}
+
+fn path_to_gitignore_pattern(path: &Path) -> Result<String, CliError> {
+    let pattern = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+
+    if pattern.contains('\n') || pattern.contains('\r') {
+        return Err(CliError::from("ignore path cannot contain a newline"));
+    }
+
+    Ok(pattern)
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn add_local_ignores(
+    gctx: &mut GlobalContext,
+    exclude_path: &Path,
+    contents: &str,
+    patterns: &[String],
+) -> CliResult {
+    let existing = active_ignore_lines(contents).collect::<Vec<_>>();
+    let new_patterns = patterns
+        .iter()
+        .filter(|pattern| !existing.contains(&pattern.as_str()))
+        .collect::<Vec<_>>();
+
+    if new_patterns.is_empty() {
+        gctx.shell()
+            .note("All requested patterns are already ignored locally.");
+        return Ok(());
+    }
+
+    let mut updated = contents.to_string();
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    for pattern in &new_patterns {
+        updated.push_str(pattern);
+        updated.push('\n');
+    }
+
+    if let Some(parent) = exclude_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(exclude_path, updated)?;
+
+    for pattern in new_patterns {
+        gctx.shell().note(format!("Ignored locally: {pattern}"));
+    }
+    gctx.shell()
+        .note(format!("Updated {}", exclude_path.display()));
+    Ok(())
+}
+
+fn remove_local_ignores(
+    gctx: &mut GlobalContext,
+    exclude_path: &Path,
+    contents: &str,
+    patterns: &[String],
+) -> CliResult {
+    let mut removed = Vec::new();
+    let mut kept = Vec::new();
+
+    for line in contents.lines() {
+        if patterns.iter().any(|pattern| pattern == line) {
+            removed.push(line.to_string());
+        } else {
+            kept.push(line);
+        }
+    }
+
+    if removed.is_empty() {
+        gctx.shell()
+            .note("No matching repo-local ignore patterns found.");
+        return Ok(());
+    }
+
+    let mut updated = kept.join("\n");
+    if contents.ends_with('\n') && !updated.is_empty() {
+        updated.push('\n');
+    }
+    fs::write(exclude_path, updated)?;
+
+    removed.sort();
+    removed.dedup();
+    for pattern in removed {
+        gctx.shell()
+            .note(format!("Removed local ignore: {pattern}"));
+    }
+    gctx.shell()
+        .note(format!("Updated {}", exclude_path.display()));
+    Ok(())
+}
+
+fn active_ignore_lines(contents: &str) -> impl Iterator<Item = &str> {
+    contents.lines().filter(|line| {
+        let trimmed = line.trim();
+        !trimmed.is_empty() && !trimmed.starts_with('#')
+    })
 }
 
 fn print_pr_status(gctx: &mut GlobalContext, pr: &PrStatus) {
@@ -744,4 +995,48 @@ fn colored_check_state(bucket: &str, state: &str) -> String {
 
 fn enum_label(value: &str) -> String {
     value.to_ascii_lowercase().replace('_', " ")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn converts_paths_to_repo_relative_ignore_patterns() {
+        let cwd = Path::new("repo/packages/app");
+        let repo_root = Path::new("repo");
+
+        assert_eq!(
+            path_ignore_pattern(cwd, repo_root, "target/debug.log")
+                .ok()
+                .as_deref(),
+            Some("packages/app/target/debug.log")
+        );
+        assert_eq!(
+            path_ignore_pattern(cwd, repo_root, "../shared/cache")
+                .ok()
+                .as_deref(),
+            Some("packages/shared/cache")
+        );
+    }
+
+    #[test]
+    fn rejects_non_raw_paths_outside_repo() {
+        let err = match path_ignore_pattern(Path::new("repo"), Path::new("repo"), "../outside") {
+            Ok(pattern) => panic!("outside path should be rejected, got {pattern}"),
+            Err(err) => err,
+        };
+
+        assert!(err.message.contains("use --raw"));
+    }
+
+    #[test]
+    fn preserves_active_ignore_lines() {
+        let contents = "# comment\n\nbuild/\n  literal-space\n";
+        let lines = active_ignore_lines(contents).collect::<Vec<_>>();
+
+        assert_eq!(lines, ["build/", "  literal-space"]);
+    }
 }
