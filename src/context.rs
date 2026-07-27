@@ -26,7 +26,7 @@ impl GlobalContext {
         }
     }
 
-    pub fn default() -> Result<Self, CliError> {
+    pub fn from_env() -> Result<Self, CliError> {
         let shell = Shell::new();
         let homedir =
             env::var("HOME").map_err(|_| CliError::from("HOME environment variable not set"))?;
@@ -128,6 +128,12 @@ impl Shell {
 
     pub fn is_quiet(&self) -> bool {
         self.verbosity == Verbosity::Quiet
+    }
+}
+
+impl Default for Shell {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
