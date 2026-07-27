@@ -1,19 +1,23 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use memchr::memchr;
 
 use crate::context::GlobalContext;
 use crate::errors::CliResult;
+use crate::utils::terminal::{supports_dynamic_lines, DynamicRenderLoop};
 
 mod languages;
 
 const READ_BUFFER_SIZE: usize = 256 * 1024;
+const INITIAL_DISCOVERY_ITERATIONS: usize = 128;
+const LIVE_RENDER_INTERVAL: Duration = Duration::from_millis(50);
 
 pub struct ClocOptions<'a> {
     pub paths: Vec<&'a str>,
@@ -44,9 +48,13 @@ impl Count {
 
 pub fn cloc(gctx: &mut GlobalContext, options: &ClocOptions<'_>) -> CliResult {
     let paths = options.paths.iter().map(PathBuf::from).collect::<Vec<_>>();
-    let by_language = count_paths(&paths);
 
-    if !gctx.shell().is_quiet() {
+    if gctx.shell().is_quiet() {
+        let _ = count_paths(&paths);
+    } else if supports_dynamic_lines() {
+        count_paths_live(&paths)?;
+    } else {
+        let by_language = count_paths(&paths);
         print_report(&by_language);
     }
 
@@ -56,6 +64,155 @@ pub fn cloc(gctx: &mut GlobalContext, options: &ClocOptions<'_>) -> CliResult {
 fn count_paths(paths: &[PathBuf]) -> HashMap<&'static str, Count> {
     let files = collect_files(paths);
     count_files_parallel(files)
+}
+
+fn count_paths_live(paths: &[PathBuf]) -> io::Result<HashMap<&'static str, Count>> {
+    let initial = discover_initial_files(paths);
+    let worker_count = thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .max(1);
+    let work_queue = Arc::new(WorkQueue::new(initial.files.clone()));
+    let (sender, receiver) = mpsc::channel();
+    let mut state = LiveState::new(&initial);
+    let mut frame = DynamicRenderLoop::start(&state.render(Some('-')))?;
+    let mut last_render = Instant::now();
+
+    thread::scope(|scope| {
+        {
+            let work_queue = Arc::clone(&work_queue);
+            let sender = sender.clone();
+            let discovery_queue = initial.queue.clone();
+            scope.spawn(move || {
+                discover_remaining_files(discovery_queue, &work_queue, &sender);
+                work_queue.finish();
+                let _ = sender.send(LiveEvent::DiscoveryDone);
+            });
+        }
+
+        for _ in 0..worker_count {
+            let work_queue = Arc::clone(&work_queue);
+            let sender = sender.clone();
+            scope.spawn(move || {
+                while let Some(file) = work_queue.pop() {
+                    let count =
+                        count_file(&file.path, file.language)
+                            .ok()
+                            .flatten()
+                            .map(|mut count| {
+                                count.files = 1;
+                                count
+                            });
+                    let _ = sender.send(LiveEvent::FileCounted {
+                        language: file.language,
+                        count,
+                    });
+                }
+                let _ = sender.send(LiveEvent::WorkerDone);
+            });
+        }
+
+        drop(sender);
+
+        while !state.is_done(worker_count) {
+            match receiver.recv_timeout(frame.tick_interval()) {
+                Ok(event) => {
+                    state.apply(event);
+                    while let Ok(event) = receiver.try_recv() {
+                        state.apply(event);
+                    }
+                    if state.is_done(worker_count) || last_render.elapsed() >= LIVE_RENDER_INTERVAL
+                    {
+                        frame.advance(&state.render(Some(frame.spinner())))?;
+                        last_render = Instant::now();
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    frame.advance(&state.render(Some(frame.spinner())))?;
+                    last_render = Instant::now();
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        frame.replace(&state.render(None))?;
+        Ok(state.by_language)
+    })
+}
+
+#[derive(Debug)]
+struct InitialDiscovery {
+    files: Vec<CountedFile>,
+    queue: VecDeque<PathBuf>,
+    language_files: HashMap<&'static str, u64>,
+}
+
+fn discover_initial_files(paths: &[PathBuf]) -> InitialDiscovery {
+    let mut files = Vec::new();
+    let mut language_files = HashMap::new();
+    let mut queue = paths.iter().cloned().collect::<VecDeque<_>>();
+    let mut iterations = 0;
+
+    while iterations < INITIAL_DISCOVERY_ITERATIONS {
+        let Some(path) = queue.pop_front() else {
+            break;
+        };
+        iterations += 1;
+
+        discover_path(path, &mut queue, |file| {
+            *language_files.entry(file.language).or_insert(0) += 1;
+            files.push(file);
+        });
+    }
+
+    InitialDiscovery {
+        files,
+        queue,
+        language_files,
+    }
+}
+
+fn discover_remaining_files(
+    mut discovery_queue: VecDeque<PathBuf>,
+    work_queue: &WorkQueue,
+    sender: &mpsc::Sender<LiveEvent>,
+) {
+    while let Some(path) = discovery_queue.pop_front() {
+        discover_path(path, &mut discovery_queue, |file| {
+            let language = file.language;
+            work_queue.push(file);
+            let _ = sender.send(LiveEvent::FileDiscovered { language });
+        });
+    }
+}
+
+fn discover_path(
+    path: PathBuf,
+    queue: &mut VecDeque<PathBuf>,
+    mut on_file: impl FnMut(CountedFile),
+) {
+    let Ok(metadata) = fs::symlink_metadata(&path) else {
+        return;
+    };
+
+    if metadata.is_file() && !should_skip_file(&path) {
+        if let Some(language) = detect_language(&path) {
+            on_file(CountedFile { path, language });
+        }
+        return;
+    }
+
+    if !metadata.is_dir() || should_skip_dir(&path) {
+        return;
+    }
+
+    let Ok(entries) = fs::read_dir(&path) else {
+        return;
+    };
+
+    for entry in entries.filter_map(Result::ok) {
+        queue.push_back(entry.path());
+    }
 }
 
 fn collect_files(paths: &[PathBuf]) -> Vec<CountedFile> {
@@ -88,6 +245,217 @@ fn collect_files(paths: &[PathBuf]) -> Vec<CountedFile> {
     }
 
     files
+}
+
+struct WorkQueue {
+    state: Mutex<WorkQueueState>,
+    available: Condvar,
+}
+
+struct WorkQueueState {
+    files: VecDeque<CountedFile>,
+    done: bool,
+}
+
+impl WorkQueue {
+    fn new(files: Vec<CountedFile>) -> Self {
+        Self {
+            state: Mutex::new(WorkQueueState {
+                files: files.into(),
+                done: false,
+            }),
+            available: Condvar::new(),
+        }
+    }
+
+    fn push(&self, file: CountedFile) {
+        let mut state = self.state.lock().unwrap();
+        state.files.push_back(file);
+        self.available.notify_one();
+    }
+
+    fn pop(&self) -> Option<CountedFile> {
+        let mut state = self.state.lock().unwrap();
+        loop {
+            if let Some(file) = state.files.pop_front() {
+                return Some(file);
+            }
+            if state.done {
+                return None;
+            }
+            state = self.available.wait(state).unwrap();
+        }
+    }
+
+    fn finish(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.done = true;
+        self.available.notify_all();
+    }
+}
+
+enum LiveEvent {
+    FileDiscovered {
+        language: &'static str,
+    },
+    FileCounted {
+        language: &'static str,
+        count: Option<Count>,
+    },
+    DiscoveryDone,
+    WorkerDone,
+}
+
+struct LiveState {
+    by_language: HashMap<&'static str, Count>,
+    ordered_languages: Vec<&'static str>,
+    discovered_files: u64,
+    counted_files: u64,
+    discovery_done: bool,
+    workers_done: usize,
+}
+
+impl LiveState {
+    fn new(initial: &InitialDiscovery) -> Self {
+        let mut ordered_languages = initial.language_files.iter().collect::<Vec<_>>();
+        ordered_languages.sort_by(
+            |(left_language, left_files), (right_language, right_files)| {
+                right_files
+                    .cmp(left_files)
+                    .then_with(|| left_language.cmp(right_language))
+            },
+        );
+        let ordered_languages = ordered_languages
+            .into_iter()
+            .map(|(language, _)| *language)
+            .collect();
+
+        Self {
+            by_language: HashMap::new(),
+            ordered_languages,
+            discovered_files: initial.files.len() as u64,
+            counted_files: 0,
+            discovery_done: initial.queue.is_empty(),
+            workers_done: 0,
+        }
+    }
+
+    fn apply(&mut self, event: LiveEvent) {
+        match event {
+            LiveEvent::FileDiscovered { language } => {
+                self.discovered_files += 1;
+                self.ensure_language(language);
+            }
+            LiveEvent::FileCounted { language, count } => {
+                self.counted_files += 1;
+                self.ensure_language(language);
+                if let Some(count) = count {
+                    self.by_language.entry(language).or_default().add(count);
+                }
+            }
+            LiveEvent::DiscoveryDone => {
+                self.discovery_done = true;
+            }
+            LiveEvent::WorkerDone => {
+                self.workers_done += 1;
+            }
+        }
+    }
+
+    fn ensure_language(&mut self, language: &'static str) {
+        if !self.ordered_languages.contains(&language) {
+            self.ordered_languages.push(language);
+        }
+    }
+
+    fn is_done(&self, worker_count: usize) -> bool {
+        self.discovery_done && self.workers_done >= worker_count
+    }
+
+    fn render(&self, spinner: Option<char>) -> Vec<String> {
+        let mut lines = Vec::new();
+        let status = match spinner {
+            Some(spinner) if self.discovery_done => {
+                format!(
+                    "{spinner} counting files: {}/{}",
+                    self.counted_files, self.discovered_files
+                )
+            }
+            Some(spinner) => format!(
+                "{spinner} scanning and counting files: counted {}, found {}",
+                self.counted_files, self.discovered_files
+            ),
+            None => format!("counted {} files", self.counted_files),
+        };
+        let render_languages = self.render_languages(spinner.is_none());
+
+        lines.push(status);
+        lines.push(format!(
+            "{:<28} {:>12} {:>12} {:>12} {:>12}",
+            "Language", "files", "blank", "comment", "code"
+        ));
+        lines.push(format!(
+            "{:<28} {:>12} {:>12} {:>12} {:>12}",
+            "--------", "-----", "-----", "-------", "----"
+        ));
+
+        let mut total = Count::default();
+        for language in render_languages {
+            let count = self.by_language.get(language).copied().unwrap_or_default();
+            total.add(count);
+            lines.push(format!(
+                "{:<28} {:>12} {:>12} {:>12} {:>12}",
+                language, count.files, count.blank, count.comment, count.code
+            ));
+        }
+
+        lines.push(format!(
+            "{:<28} {:>12} {:>12} {:>12} {:>12}",
+            "SUM:", total.files, total.blank, total.comment, total.code
+        ));
+        lines
+    }
+
+    fn render_languages(&self, final_render: bool) -> Vec<&'static str> {
+        let mut languages = self.ordered_languages.clone();
+        if final_render {
+            languages.retain(|language| {
+                self.by_language
+                    .get(language)
+                    .map(|count| count.files > 0)
+                    .unwrap_or(false)
+            });
+        }
+        languages.sort_by(|left_language, right_language| {
+            let left_count = self
+                .by_language
+                .get(left_language)
+                .copied()
+                .unwrap_or_default();
+            let right_count = self
+                .by_language
+                .get(right_language)
+                .copied()
+                .unwrap_or_default();
+            right_count
+                .code
+                .cmp(&left_count.code)
+                .then_with(|| right_count.files.cmp(&left_count.files))
+                .then_with(|| {
+                    self.language_index(left_language)
+                        .cmp(&self.language_index(right_language))
+                })
+                .then_with(|| left_language.cmp(right_language))
+        });
+        languages
+    }
+
+    fn language_index(&self, language: &'static str) -> usize {
+        self.ordered_languages
+            .iter()
+            .position(|candidate| *candidate == language)
+            .unwrap_or(usize::MAX)
+    }
 }
 
 fn detect_language(path: &Path) -> Option<&'static str> {
