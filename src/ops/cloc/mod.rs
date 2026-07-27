@@ -15,6 +15,7 @@ use crate::utils::terminal::{supports_dynamic_lines, DynamicRenderLoop};
 
 mod languages;
 
+const TABLE_WIDTH: usize = 88;
 const READ_BUFFER_SIZE: usize = 256 * 1024;
 const INITIAL_DISCOVERY_ITERATIONS: usize = 128;
 const LIVE_RENDER_INTERVAL: Duration = Duration::from_millis(50);
@@ -37,12 +38,29 @@ struct CountedFile {
     language: &'static str,
 }
 
+#[derive(Clone, Debug, Default)]
+struct DiscoveryStats {
+    text_files: u64,
+    ignored_files: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct CountReport {
+    by_language: HashMap<&'static str, Count>,
+    stats: DiscoveryStats,
+    elapsed: Duration,
+}
+
 impl Count {
     fn add(&mut self, other: Self) {
         self.files += other.files;
         self.blank += other.blank;
         self.comment += other.comment;
         self.code += other.code;
+    }
+
+    fn lines(self) -> u64 {
+        self.blank + self.comment + self.code
     }
 }
 
@@ -52,21 +70,34 @@ pub fn cloc(gctx: &mut GlobalContext, options: &ClocOptions<'_>) -> CliResult {
     if gctx.shell().is_quiet() {
         let _ = count_paths(&paths);
     } else if supports_dynamic_lines() {
-        count_paths_live(&paths)?;
+        let _ = count_paths_live(&paths)?;
     } else {
-        let by_language = count_paths(&paths);
-        print_report(&by_language);
+        let report = count_paths(&paths);
+        print_report(&report);
     }
 
     Ok(())
 }
 
-fn count_paths(paths: &[PathBuf]) -> HashMap<&'static str, Count> {
-    let files = collect_files(paths);
-    count_files_parallel(files)
+fn count_paths(paths: &[PathBuf]) -> CountReport {
+    let start = Instant::now();
+    let discovered = collect_files(paths);
+    let (by_language, count_ignored_files) = count_files_parallel(discovered.files);
+    CountReport {
+        by_language,
+        stats: DiscoveryStats {
+            text_files: discovered
+                .stats
+                .text_files
+                .saturating_sub(count_ignored_files),
+            ignored_files: discovered.stats.ignored_files + count_ignored_files,
+        },
+        elapsed: start.elapsed(),
+    }
 }
 
-fn count_paths_live(paths: &[PathBuf]) -> io::Result<HashMap<&'static str, Count>> {
+fn count_paths_live(paths: &[PathBuf]) -> io::Result<CountReport> {
+    let start = Instant::now();
     let initial = discover_initial_files(paths);
     let worker_count = thread::available_parallelism()
         .map(usize::from)
@@ -75,7 +106,7 @@ fn count_paths_live(paths: &[PathBuf]) -> io::Result<HashMap<&'static str, Count
     let work_queue = Arc::new(WorkQueue::new(initial.files.clone()));
     let (sender, receiver) = mpsc::channel();
     let mut state = LiveState::new(&initial);
-    let mut frame = DynamicRenderLoop::start(&state.render(Some('-')))?;
+    let mut frame = DynamicRenderLoop::start(&state.render(start.elapsed()))?;
     let mut last_render = Instant::now();
 
     thread::scope(|scope| {
@@ -123,20 +154,21 @@ fn count_paths_live(paths: &[PathBuf]) -> io::Result<HashMap<&'static str, Count
                     }
                     if state.is_done(worker_count) || last_render.elapsed() >= LIVE_RENDER_INTERVAL
                     {
-                        frame.advance(&state.render(Some(frame.spinner())))?;
+                        frame.advance(&state.render(start.elapsed()))?;
                         last_render = Instant::now();
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    frame.advance(&state.render(Some(frame.spinner())))?;
+                    frame.advance(&state.render(start.elapsed()))?;
                     last_render = Instant::now();
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
 
-        frame.replace(&state.render(None))?;
-        Ok(state.by_language)
+        let report = state.into_report(start.elapsed());
+        frame.replace(&render_report(&report))?;
+        Ok(report)
     })
 }
 
@@ -145,11 +177,13 @@ struct InitialDiscovery {
     files: Vec<CountedFile>,
     queue: VecDeque<PathBuf>,
     language_files: HashMap<&'static str, u64>,
+    stats: DiscoveryStats,
 }
 
 fn discover_initial_files(paths: &[PathBuf]) -> InitialDiscovery {
     let mut files = Vec::new();
     let mut language_files = HashMap::new();
+    let mut stats = DiscoveryStats::default();
     let mut queue = paths.iter().cloned().collect::<VecDeque<_>>();
     let mut iterations = 0;
 
@@ -159,16 +193,25 @@ fn discover_initial_files(paths: &[PathBuf]) -> InitialDiscovery {
         };
         iterations += 1;
 
-        discover_path(path, &mut queue, |file| {
-            *language_files.entry(file.language).or_insert(0) += 1;
-            files.push(file);
-        });
+        discover_path(
+            path,
+            &mut queue,
+            |file| {
+                stats.text_files += 1;
+                *language_files.entry(file.language).or_insert(0) += 1;
+                files.push(file);
+            },
+            || {
+                stats.ignored_files += 1;
+            },
+        );
     }
 
     InitialDiscovery {
         files,
         queue,
         language_files,
+        stats,
     }
 }
 
@@ -178,11 +221,18 @@ fn discover_remaining_files(
     sender: &mpsc::Sender<LiveEvent>,
 ) {
     while let Some(path) = discovery_queue.pop_front() {
-        discover_path(path, &mut discovery_queue, |file| {
-            let language = file.language;
-            work_queue.push(file);
-            let _ = sender.send(LiveEvent::FileDiscovered { language });
-        });
+        discover_path(
+            path,
+            &mut discovery_queue,
+            |file| {
+                let language = file.language;
+                work_queue.push(file);
+                let _ = sender.send(LiveEvent::FileDiscovered { language });
+            },
+            || {
+                let _ = sender.send(LiveEvent::FileIgnored);
+            },
+        );
     }
 }
 
@@ -190,14 +240,21 @@ fn discover_path(
     path: PathBuf,
     queue: &mut VecDeque<PathBuf>,
     mut on_file: impl FnMut(CountedFile),
+    mut on_ignored_file: impl FnMut(),
 ) {
     let Ok(metadata) = fs::symlink_metadata(&path) else {
         return;
     };
 
-    if metadata.is_file() && !should_skip_file(&path) {
+    if metadata.is_file() {
+        if should_skip_file(&path) {
+            on_ignored_file();
+            return;
+        }
         if let Some(language) = detect_language(&path) {
             on_file(CountedFile { path, language });
+        } else {
+            on_ignored_file();
         }
         return;
     }
@@ -215,8 +272,14 @@ fn discover_path(
     }
 }
 
-fn collect_files(paths: &[PathBuf]) -> Vec<CountedFile> {
+struct DiscoveredFiles {
+    files: Vec<CountedFile>,
+    stats: DiscoveryStats,
+}
+
+fn collect_files(paths: &[PathBuf]) -> DiscoveredFiles {
     let mut files = Vec::new();
+    let mut stats = DiscoveryStats::default();
     let mut stack = paths.to_vec();
 
     while let Some(path) = stack.pop() {
@@ -224,9 +287,16 @@ fn collect_files(paths: &[PathBuf]) -> Vec<CountedFile> {
             continue;
         };
 
-        if metadata.is_file() && !should_skip_file(&path) {
+        if metadata.is_file() {
+            if should_skip_file(&path) {
+                stats.ignored_files += 1;
+                continue;
+            }
             if let Some(language) = detect_language(&path) {
+                stats.text_files += 1;
                 files.push(CountedFile { path, language });
+            } else {
+                stats.ignored_files += 1;
             }
             continue;
         }
@@ -244,7 +314,7 @@ fn collect_files(paths: &[PathBuf]) -> Vec<CountedFile> {
         }
     }
 
-    files
+    DiscoveredFiles { files, stats }
 }
 
 struct WorkQueue {
@@ -298,6 +368,7 @@ enum LiveEvent {
     FileDiscovered {
         language: &'static str,
     },
+    FileIgnored,
     FileCounted {
         language: &'static str,
         count: Option<Count>,
@@ -309,8 +380,7 @@ enum LiveEvent {
 struct LiveState {
     by_language: HashMap<&'static str, Count>,
     ordered_languages: Vec<&'static str>,
-    discovered_files: u64,
-    counted_files: u64,
+    ignored_files: u64,
     discovery_done: bool,
     workers_done: usize,
 }
@@ -333,8 +403,7 @@ impl LiveState {
         Self {
             by_language: HashMap::new(),
             ordered_languages,
-            discovered_files: initial.files.len() as u64,
-            counted_files: 0,
+            ignored_files: initial.stats.ignored_files,
             discovery_done: initial.queue.is_empty(),
             workers_done: 0,
         }
@@ -343,14 +412,17 @@ impl LiveState {
     fn apply(&mut self, event: LiveEvent) {
         match event {
             LiveEvent::FileDiscovered { language } => {
-                self.discovered_files += 1;
                 self.ensure_language(language);
             }
+            LiveEvent::FileIgnored => {
+                self.ignored_files += 1;
+            }
             LiveEvent::FileCounted { language, count } => {
-                self.counted_files += 1;
                 self.ensure_language(language);
                 if let Some(count) = count {
                     self.by_language.entry(language).or_default().add(count);
+                } else {
+                    self.ignored_files += 1;
                 }
             }
             LiveEvent::DiscoveryDone => {
@@ -372,48 +444,8 @@ impl LiveState {
         self.discovery_done && self.workers_done >= worker_count
     }
 
-    fn render(&self, spinner: Option<char>) -> Vec<String> {
-        let mut lines = Vec::new();
-        let status = match spinner {
-            Some(spinner) if self.discovery_done => {
-                format!(
-                    "{spinner} counting files: {}/{}",
-                    self.counted_files, self.discovered_files
-                )
-            }
-            Some(spinner) => format!(
-                "{spinner} scanning and counting files: counted {}, found {}",
-                self.counted_files, self.discovered_files
-            ),
-            None => format!("counted {} files", self.counted_files),
-        };
-        let render_languages = self.render_languages(spinner.is_none());
-
-        lines.push(status);
-        lines.push(format!(
-            "{:<28} {:>12} {:>12} {:>12} {:>12}",
-            "Language", "files", "blank", "comment", "code"
-        ));
-        lines.push(format!(
-            "{:<28} {:>12} {:>12} {:>12} {:>12}",
-            "--------", "-----", "-----", "-------", "----"
-        ));
-
-        let mut total = Count::default();
-        for language in render_languages {
-            let count = self.by_language.get(language).copied().unwrap_or_default();
-            total.add(count);
-            lines.push(format!(
-                "{:<28} {:>12} {:>12} {:>12} {:>12}",
-                language, count.files, count.blank, count.comment, count.code
-            ));
-        }
-
-        lines.push(format!(
-            "{:<28} {:>12} {:>12} {:>12} {:>12}",
-            "SUM:", total.files, total.blank, total.comment, total.code
-        ));
-        lines
+    fn render(&self, elapsed: Duration) -> Vec<String> {
+        render_report_with_rows(&self.to_report(elapsed), self.render_rows(false))
     }
 
     fn render_languages(&self, final_render: bool) -> Vec<&'static str> {
@@ -455,6 +487,34 @@ impl LiveState {
             .iter()
             .position(|candidate| *candidate == language)
             .unwrap_or(usize::MAX)
+    }
+
+    fn to_report(&self, elapsed: Duration) -> CountReport {
+        let text_files = total_count(&self.by_language).files;
+        CountReport {
+            by_language: self.by_language.clone(),
+            stats: DiscoveryStats {
+                text_files,
+                ignored_files: self.ignored_files,
+            },
+            elapsed,
+        }
+    }
+
+    fn into_report(self, elapsed: Duration) -> CountReport {
+        self.to_report(elapsed)
+    }
+
+    fn render_rows(&self, final_render: bool) -> Vec<(&'static str, Count)> {
+        self.render_languages(final_render)
+            .into_iter()
+            .map(|language| {
+                (
+                    language,
+                    self.by_language.get(language).copied().unwrap_or_default(),
+                )
+            })
+            .collect()
     }
 }
 
@@ -543,9 +603,9 @@ fn should_skip_file(path: &Path) -> bool {
     )
 }
 
-fn count_files_parallel(files: Vec<CountedFile>) -> HashMap<&'static str, Count> {
+fn count_files_parallel(files: Vec<CountedFile>) -> (HashMap<&'static str, Count>, u64) {
     if files.is_empty() {
-        return HashMap::new();
+        return (HashMap::new(), 0);
     }
 
     let worker_count = thread::available_parallelism()
@@ -563,6 +623,7 @@ fn count_files_parallel(files: Vec<CountedFile>) -> HashMap<&'static str, Count>
             let next = Arc::clone(&next);
             workers.push(scope.spawn(move || {
                 let mut by_language = HashMap::new();
+                let mut ignored_files = 0;
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     let Some(file) = files.get(index) else {
@@ -575,15 +636,19 @@ fn count_files_parallel(files: Vec<CountedFile>) -> HashMap<&'static str, Count>
                             .or_insert_with(Count::default);
                         count.files += 1;
                         count.add(file_count);
+                    } else {
+                        ignored_files += 1;
                     }
                 }
-                by_language
+                (by_language, ignored_files)
             }));
         }
 
         let mut total = HashMap::new();
+        let mut ignored_files = 0;
         for worker in workers {
-            if let Ok(by_language) = worker.join() {
+            if let Ok((by_language, worker_ignored_files)) = worker.join() {
+                ignored_files += worker_ignored_files;
                 for (language, count) in by_language {
                     total
                         .entry(language)
@@ -592,7 +657,7 @@ fn count_files_parallel(files: Vec<CountedFile>) -> HashMap<&'static str, Count>
                 }
             }
         }
-        total
+        (total, ignored_files)
     })
 }
 
@@ -620,7 +685,34 @@ fn count_file(path: &Path, language: &str) -> io::Result<Option<Count>> {
     )))
 }
 
-fn print_report(by_language: &HashMap<&'static str, Count>) {
+fn print_report(report: &CountReport) {
+    for line in render_report(report) {
+        println!("{line}");
+    }
+}
+
+fn render_report(report: &CountReport) -> Vec<String> {
+    render_report_with_rows(report, sorted_rows(&report.by_language))
+}
+
+fn render_report_with_rows(report: &CountReport, rows: Vec<(&'static str, Count)>) -> Vec<String> {
+    let total = total_count(&report.by_language);
+    let elapsed_secs = report.elapsed.as_secs_f64();
+    let files_per_second = rate(report.stats.text_files, elapsed_secs);
+    let lines_per_second = rate(total.lines(), elapsed_secs);
+    let mut lines = Vec::new();
+
+    lines.push(format!("{:>8} text files.", report.stats.text_files));
+    lines.push(format!("{:>8} files ignored.", report.stats.ignored_files));
+    lines.push(String::new());
+    lines.push(format!(
+        "{elapsed_secs:.2} s, {files_per_second:.1} files/s, {lines_per_second:.1} lines/s"
+    ));
+    lines.extend(render_table(rows, total));
+    lines
+}
+
+fn sorted_rows(by_language: &HashMap<&'static str, Count>) -> Vec<(&'static str, Count)> {
     let mut rows = by_language.iter().collect::<Vec<_>>();
     rows.sort_by(
         |(left_language, left_count), (right_language, right_count)| {
@@ -631,29 +723,55 @@ fn print_report(by_language: &HashMap<&'static str, Count>) {
                 .then_with(|| left_language.cmp(right_language))
         },
     );
+    rows.into_iter()
+        .map(|(language, count)| (*language, *count))
+        .collect()
+}
 
-    println!(
-        "{:<28} {:>12} {:>12} {:>12} {:>12}",
+fn render_table(
+    rows: impl IntoIterator<Item = (&'static str, Count)>,
+    total: Count,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let separator = "-".repeat(TABLE_WIDTH);
+
+    lines.push(separator.clone());
+    lines.push(format!(
+        "{:<36} {:>12} {:>12} {:>12} {:>12}",
         "Language", "files", "blank", "comment", "code"
-    );
-    println!(
-        "{:<28} {:>12} {:>12} {:>12} {:>12}",
-        "--------", "-----", "-----", "-------", "----"
-    );
+    ));
+    lines.push(separator.clone());
 
-    let mut total = Count::default();
     for (language, count) in rows {
-        total.add(*count);
-        println!(
-            "{:<28} {:>12} {:>12} {:>12} {:>12}",
+        lines.push(format!(
+            "{:<36} {:>12} {:>12} {:>12} {:>12}",
             language, count.files, count.blank, count.comment, count.code
-        );
+        ));
     }
 
-    println!(
-        "{:<28} {:>12} {:>12} {:>12} {:>12}",
+    lines.push(separator.clone());
+    lines.push(format!(
+        "{:<36} {:>12} {:>12} {:>12} {:>12}",
         "SUM:", total.files, total.blank, total.comment, total.code
-    );
+    ));
+    lines.push(separator);
+    lines
+}
+
+fn total_count(by_language: &HashMap<&'static str, Count>) -> Count {
+    let mut total = Count::default();
+    for count in by_language.values() {
+        total.add(*count);
+    }
+    total
+}
+
+fn rate(count: u64, elapsed_secs: f64) -> f64 {
+    if elapsed_secs > 0.0 {
+        count as f64 / elapsed_secs
+    } else {
+        0.0
+    }
 }
 
 fn count_bytes(bytes: &[u8], syntax: Option<&languages::CommentSyntax>) -> Count {
@@ -755,8 +873,8 @@ mod tests {
         fs::write(root.join("binary.bin"), b"one\0two\n").unwrap();
         fs::write(root.join("artifact.rlib"), b"not\ncounted\n").unwrap();
 
-        let count = count_paths(&[root.clone()]);
-        let text = count.get("Text").copied().unwrap_or_default();
+        let report = count_paths(&[root.clone()]);
+        let text = report.by_language.get("Text").copied().unwrap_or_default();
 
         assert_eq!(
             text,
@@ -767,6 +885,8 @@ mod tests {
                 code: 3
             }
         );
+        assert_eq!(report.stats.text_files, 2);
+        assert_eq!(report.stats.ignored_files, 2);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -777,8 +897,8 @@ mod tests {
         fs::write(root.join(".git/config"), "hidden\n").unwrap();
         fs::write(root.join("visible.txt"), "visible\n").unwrap();
 
-        let count = count_paths(&[root.clone()]);
-        let text = count.get("Text").copied().unwrap_or_default();
+        let report = count_paths(&[root.clone()]);
+        let text = report.by_language.get("Text").copied().unwrap_or_default();
 
         assert_eq!(
             text,
@@ -789,6 +909,7 @@ mod tests {
                 code: 1
             }
         );
+        assert_eq!(report.stats.text_files, 1);
         fs::remove_dir_all(root).unwrap();
     }
 
