@@ -6,7 +6,7 @@ use crate::ops::cloc as ops;
 
 pub fn command() -> Command {
     Command::new("cloc")
-        .about("Count lines in files quickly")
+        .about("Count lines of code quickly")
         .arg(
             Arg::new("paths")
                 .help("Files or directories to count")
