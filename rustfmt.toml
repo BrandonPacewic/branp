@@ -1,0 +1,6 @@
+max_width = 150
+use_small_heuristics = "Max"
+unstable_features = true
+where_single_line = true
+inline_attribute_width = 150
+doc_comment_code_block_width = 150

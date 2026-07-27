@@ -37,8 +37,5 @@ pub fn get_version_info() -> VersionInfo {
         commit_date: option_env_str!("BRANP_GIT_DATE").unwrap_or_default(),
     });
 
-    VersionInfo {
-        version,
-        commit_info,
-    }
+    VersionInfo { version, commit_info }
 }

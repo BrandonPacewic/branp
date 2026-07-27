@@ -47,14 +47,7 @@ pub struct Finding {
 }
 
 pub fn run(ctx: &DoctorContext, selector: CheckSelector) -> Vec<CheckReport> {
-    checks_for(selector)
-        .into_iter()
-        .map(|check| CheckReport {
-            name: check.name(),
-            summary: check.summary(),
-            findings: check.run(ctx),
-        })
-        .collect()
+    checks_for(selector).into_iter().map(|check| CheckReport { name: check.name(), summary: check.summary(), findings: check.run(ctx) }).collect()
 }
 
 fn checks_for(selector: CheckSelector) -> Vec<Box<dyn DoctorCheck>> {
@@ -63,20 +56,8 @@ fn checks_for(selector: CheckSelector) -> Vec<Box<dyn DoctorCheck>> {
     }
 }
 
-pub fn finding(
-    id: &'static str,
-    severity: Severity,
-    title: impl Into<String>,
-    details: Vec<String>,
-    fix: Option<Fix>,
-) -> Finding {
-    Finding {
-        id,
-        severity,
-        title: title.into(),
-        details,
-        fix,
-    }
+pub fn finding(id: &'static str, severity: Severity, title: impl Into<String>, details: Vec<String>, fix: Option<Fix>) -> Finding {
+    Finding { id, severity, title: title.into(), details, fix }
 }
 
 pub fn command_error_detail(error: CliError) -> Vec<String> {

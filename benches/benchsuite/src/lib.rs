@@ -8,9 +8,7 @@ pub struct Fixtures {
 
 impl Fixtures {
     pub fn new(target_tmpdir: &str) -> Self {
-        let fixtures = Self {
-            target_tmpdir: PathBuf::from(target_tmpdir),
-        };
+        let fixtures = Self { target_tmpdir: PathBuf::from(target_tmpdir) };
         fixtures.unpack_archives();
         fixtures
     }
@@ -24,10 +22,7 @@ impl Fixtures {
     }
 
     fn archive_root(&self) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("workspaces")
+        Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("workspaces")
     }
 
     fn metadata_path(&self) -> PathBuf {
@@ -42,10 +37,8 @@ impl Fixtures {
 
         fs::create_dir_all(self.workspace_root()).unwrap();
 
-        for archive_path in entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|extension| extension == "tgz"))
+        for archive_path in
+            entries.filter_map(Result::ok).map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|extension| extension == "tgz"))
         {
             let name = archive_path.file_stem().unwrap();
             let dest = self.workspace_root().join(name);
@@ -146,9 +139,7 @@ impl GitInfo {
 }
 
 fn external_repo_path() -> Option<PathBuf> {
-    std::env::var_os("BP_CLOC_BENCH_REPO")
-        .or_else(|| env_file_value("BP_CLOC_BENCH_REPO"))
-        .map(PathBuf::from)
+    std::env::var_os("BP_CLOC_BENCH_REPO").or_else(|| env_file_value("BP_CLOC_BENCH_REPO")).map(PathBuf::from)
 }
 
 fn env_file_value(key: &str) -> Option<std::ffi::OsString> {
@@ -174,20 +165,12 @@ fn strip_quotes(value: &str) -> &str {
     value
         .strip_prefix('"')
         .and_then(|value| value.strip_suffix('"'))
-        .or_else(|| {
-            value
-                .strip_prefix('\'')
-                .and_then(|value| value.strip_suffix('\''))
-        })
+        .or_else(|| value.strip_prefix('\'').and_then(|value| value.strip_suffix('\'')))
         .unwrap_or(value)
 }
 
 fn git_output(path: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .current_dir(path)
-        .args(args)
-        .output()
-        .ok()?;
+    let output = Command::new("git").current_dir(path).args(args).output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -198,11 +181,7 @@ fn git_output(path: &Path, args: &[&str]) -> Option<String> {
 }
 
 fn git_dirty(path: &Path) -> Option<bool> {
-    let status = Command::new("git")
-        .current_dir(path)
-        .args(["diff-index", "--quiet", "HEAD", "--"])
-        .status()
-        .ok()?;
+    let status = Command::new("git").current_dir(path).args(["diff-index", "--quiet", "HEAD", "--"]).status().ok()?;
     Some(!status.success())
 }
 
@@ -215,26 +194,11 @@ fn render_metadata(inputs: &[ClocInput]) -> String {
 
         output.push_str("  {\n");
         output.push_str(&format!("    \"name\": {},\n", json_string(&input.name)));
-        output.push_str(&format!(
-            "    \"path\": {},\n",
-            json_string(&input.path.display().to_string())
-        ));
-        output.push_str(&format!(
-            "    \"git_head\": {},\n",
-            json_optional_string(input.git.head.as_deref())
-        ));
-        output.push_str(&format!(
-            "    \"git_branch\": {},\n",
-            json_optional_string(input.git.branch.as_deref())
-        ));
-        output.push_str(&format!(
-            "    \"git_remote\": {},\n",
-            json_optional_string(input.git.remote.as_deref())
-        ));
-        output.push_str(&format!(
-            "    \"git_dirty\": {}\n",
-            json_optional_bool(input.git.dirty)
-        ));
+        output.push_str(&format!("    \"path\": {},\n", json_string(&input.path.display().to_string())));
+        output.push_str(&format!("    \"git_head\": {},\n", json_optional_string(input.git.head.as_deref())));
+        output.push_str(&format!("    \"git_branch\": {},\n", json_optional_string(input.git.branch.as_deref())));
+        output.push_str(&format!("    \"git_remote\": {},\n", json_optional_string(input.git.remote.as_deref())));
+        output.push_str(&format!("    \"git_dirty\": {}\n", json_optional_bool(input.git.dirty)));
         output.push_str("  }");
     }
     output.push_str("\n]\n");
@@ -246,9 +210,7 @@ fn json_optional_string(value: Option<&str>) -> String {
 }
 
 fn json_optional_bool(value: Option<bool>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "null".to_owned())
+    value.map(|value| value.to_string()).unwrap_or_else(|| "null".to_owned())
 }
 
 fn json_string(value: &str) -> String {

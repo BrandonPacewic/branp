@@ -18,18 +18,12 @@ pub struct GlobalContext {
 
 impl GlobalContext {
     pub fn new(shell: Shell, cwd: PathBuf, homedir: PathBuf) -> Self {
-        Self {
-            home_path: homedir,
-            shell,
-            cwd,
-            verbose: 0,
-        }
+        Self { home_path: homedir, shell, cwd, verbose: 0 }
     }
 
     pub fn from_env() -> Result<Self, CliError> {
         let shell = Shell::new();
-        let homedir =
-            env::var("HOME").map_err(|_| CliError::from("HOME environment variable not set"))?;
+        let homedir = env::var("HOME").map_err(|_| CliError::from("HOME environment variable not set"))?;
         let cwd = env::current_dir()?;
         Ok(Self::new(shell, cwd, PathBuf::from(homedir)))
     }
@@ -80,10 +74,7 @@ pub struct Shell {
 
 impl Shell {
     pub fn new() -> Self {
-        Self {
-            stdout: std::io::stdout(),
-            verbosity: Verbosity::Verbose,
-        }
+        Self { stdout: std::io::stdout(), verbosity: Verbosity::Verbose }
     }
 
     fn print(&mut self, message: Option<&dyn fmt::Display>) {
@@ -109,17 +100,11 @@ impl Shell {
     }
 
     pub fn warn<T: fmt::Display>(&mut self, message: T) {
-        eprintln!(
-            "{}",
-            color_print::cformat!("<yellow,bold>warning</>: {}", message)
-        );
+        eprintln!("{}", color_print::cformat!("<yellow,bold>warning</>: {}", message));
     }
 
     pub fn error<T: fmt::Display>(&mut self, message: T) {
-        eprintln!(
-            "{}",
-            color_print::cformat!("<red,bold>error</>: {}", message)
-        );
+        eprintln!("{}", color_print::cformat!("<red,bold>error</>: {}", message));
     }
 
     pub fn set_verbosity(&mut self, verbosity: Verbosity) {

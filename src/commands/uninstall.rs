@@ -9,14 +9,12 @@ use crate::context::GlobalContext;
 use crate::errors::{CliError, CliResult};
 
 pub fn command() -> Command {
-    Command::new("uninstall")
-        .about("Delete the running bp binary and shell completions")
-        .long_about(
-            "\
+    Command::new("uninstall").about("Delete the running bp binary and shell completions").long_about(
+        "\
 Delete the running bp binary and installed shell completions from disk.
 
 This command asks you to type yes before it removes anything.",
-        )
+    )
 }
 
 pub fn exec(gctx: &mut GlobalContext, _args: &ArgMatches) -> CliResult {
@@ -25,8 +23,7 @@ pub fn exec(gctx: &mut GlobalContext, _args: &ArgMatches) -> CliResult {
 
     gctx.shell().note("This will permanently delete:");
     gctx.shell().note(format!("  {}", exe.display()));
-    gctx.shell()
-        .note("  installed shell completions and zsh completion caches");
+    gctx.shell().note("  installed shell completions and zsh completion caches");
     gctx.shell().note("");
 
     let confirmation = prompt("Type `yes` to uninstall branp: ")?;
@@ -36,11 +33,9 @@ pub fn exec(gctx: &mut GlobalContext, _args: &ArgMatches) -> CliResult {
 
     remove_completion_paths(gctx, &completion_paths)?;
 
-    fs::remove_file(&exe)
-        .map_err(|e| CliError::new(format!("failed to delete {}: {e}", exe.display()), 1))?;
+    fs::remove_file(&exe).map_err(|e| CliError::new(format!("failed to delete {}: {e}", exe.display()), 1))?;
 
-    gctx.shell()
-        .note(format!("Deleted bp binary at {}", exe.display()));
+    gctx.shell().note(format!("Deleted bp binary at {}", exe.display()));
 
     Ok(())
 }
@@ -49,10 +44,7 @@ fn current_exe() -> Result<PathBuf, CliError> {
     let exe = env::current_exe()?;
 
     if !exe.exists() {
-        return Err(CliError::new(
-            format!("current executable does not exist: {}", exe.display()),
-            1,
-        ));
+        return Err(CliError::new(format!("current executable does not exist: {}", exe.display()), 1));
     }
 
     Ok(exe)
@@ -86,11 +78,7 @@ fn zcompdump_paths(home: &PathBuf) -> Vec<PathBuf> {
     entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(".zcompdump"))
-        })
+        .filter(|path| path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with(".zcompdump")))
         .collect()
 }
 
@@ -101,19 +89,11 @@ fn remove_completion_paths(gctx: &mut GlobalContext, paths: &[PathBuf]) -> CliRe
         }
 
         if path.is_dir() {
-            gctx.shell().warn(format!(
-                "Skipping completion path because it is a directory: {}",
-                path.display()
-            ));
+            gctx.shell().warn(format!("Skipping completion path because it is a directory: {}", path.display()));
             continue;
         }
 
-        fs::remove_file(path).map_err(|e| {
-            CliError::new(
-                format!("failed to delete completion {}: {e}", path.display()),
-                1,
-            )
-        })?;
+        fs::remove_file(path).map_err(|e| CliError::new(format!("failed to delete completion {}: {e}", path.display()), 1))?;
     }
 
     Ok(())

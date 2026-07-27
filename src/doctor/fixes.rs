@@ -4,16 +4,8 @@ use std::path::PathBuf;
 use crate::errors::{CliError, CliResult};
 
 pub enum Fix {
-    MarkerBlock {
-        path: PathBuf,
-        marker: &'static str,
-        lines: Vec<String>,
-        description: String,
-    },
-    Manual {
-        description: String,
-        instructions: Vec<String>,
-    },
+    MarkerBlock { path: PathBuf, marker: &'static str, lines: Vec<String>, description: String },
+    Manual { description: String, instructions: Vec<String> },
 }
 
 pub struct ApplyOutcome {
@@ -51,25 +43,11 @@ pub fn dedupe_fixes(fixes: Vec<Fix>) -> Vec<Fix> {
 
 pub fn apply_fix(fix: Fix) -> Result<ApplyOutcome, CliError> {
     match fix {
-        Fix::MarkerBlock {
-            path,
-            marker,
-            lines,
-            description,
-        } => {
+        Fix::MarkerBlock { path, marker, lines, description } => {
             upsert_marker_block(&path, marker, &lines)?;
-            Ok(ApplyOutcome {
-                description: format!("{description} ({})", path.display()),
-                warnings: Vec::new(),
-            })
+            Ok(ApplyOutcome { description: format!("{description} ({})", path.display()), warnings: Vec::new() })
         }
-        Fix::Manual {
-            description,
-            instructions,
-        } => Ok(ApplyOutcome {
-            description,
-            warnings: instructions,
-        }),
+        Fix::Manual { description, instructions } => Ok(ApplyOutcome { description, warnings: instructions }),
     }
 }
 
@@ -81,10 +59,7 @@ fn upsert_marker_block(path: &PathBuf, marker: &str, lines: &[String]) -> CliRes
 
     let updated = if let Some(start) = existing.find(&begin) {
         let Some(relative_end) = existing[start..].find(&end) else {
-            return Err(CliError::from(format!(
-                "found `{begin}` in {}, but missing `{end}`",
-                path.display()
-            )));
+            return Err(CliError::from(format!("found `{begin}` in {}, but missing `{end}`", path.display())));
         };
         let end_index = start + relative_end + end.len();
         format!("{}{}{}", &existing[..start], block, &existing[end_index..])
@@ -111,25 +86,16 @@ mod tests {
         fs::write(&path, "set -g mouse on\n").unwrap();
 
         assert!(upsert_marker_block(&path, "bp doctor: test", &["first".to_string()]).is_ok());
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            "set -g mouse on\n# >>> bp doctor: test\nfirst\n# <<< bp doctor: test\n"
-        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "set -g mouse on\n# >>> bp doctor: test\nfirst\n# <<< bp doctor: test\n");
 
         assert!(upsert_marker_block(&path, "bp doctor: test", &["second".to_string()]).is_ok());
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            "set -g mouse on\n# >>> bp doctor: test\nsecond\n# <<< bp doctor: test\n"
-        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "set -g mouse on\n# >>> bp doctor: test\nsecond\n# <<< bp doctor: test\n");
 
         let _ = fs::remove_file(path);
     }
 
     fn temp_path(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         env::temp_dir().join(format!("bp-doctor-{name}-{nanos}"))
     }
 }

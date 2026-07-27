@@ -22,10 +22,7 @@ pub fn output(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<String
 }
 
 pub fn status(program: &str, args: &[&str], cwd: Option<&Path>) -> Result<bool, CliError> {
-    let status = process(program, args, cwd)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
+    let status = process(program, args, cwd).stdout(Stdio::null()).stderr(Stdio::null()).status()?;
 
     Ok(status.success())
 }
@@ -42,17 +39,7 @@ fn process(program: &str, args: &[&str], cwd: Option<&Path>) -> ProcessCommand {
 fn command_error(program: &str, args: &[&str], output: &Output) -> CliError {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let detail = if !stderr.trim().is_empty() {
-        stderr.trim()
-    } else {
-        stdout.trim()
-    };
+    let detail = if !stderr.trim().is_empty() { stderr.trim() } else { stdout.trim() };
 
-    CliError::from(format!(
-        "{} {} failed{}{}",
-        program,
-        args.join(" "),
-        if detail.is_empty() { "" } else { ": " },
-        detail
-    ))
+    CliError::from(format!("{} {} failed{}{}", program, args.join(" "), if detail.is_empty() { "" } else { ": " }, detail))
 }

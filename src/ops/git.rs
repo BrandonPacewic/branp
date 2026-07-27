@@ -67,24 +67,11 @@ pub fn prs(gctx: &mut GlobalContext, options: &PrsOptions<'_>) -> CliResult {
     for pr in prs {
         let changes = fetch_changes_count(&client, &repo.owner, &repo.name, pr.number).unwrap_or(0);
 
-        let pr_label =
-            crate::utils::terminal::hyperlink(&format!("PR #{}", pr.number), &pr.html_url);
-        gctx.shell().note(format!(
-            "{} {}{}",
-            pr_label,
-            if pr.draft { "[DRAFT] " } else { "" },
-            pr.title
-        ));
-        gctx.shell().note(format!(
-            "  Assignees : {}",
-            linked_github_users(&pr.assignees)
-        ));
-        gctx.shell().note(format!(
-            "  Reviewers : {}",
-            linked_github_users(&pr.requested_reviewers)
-        ));
-        gctx.shell()
-            .note(format!("  Change requests pending: {changes}"));
+        let pr_label = crate::utils::terminal::hyperlink(&format!("PR #{}", pr.number), &pr.html_url);
+        gctx.shell().note(format!("{} {}{}", pr_label, if pr.draft { "[DRAFT] " } else { "" }, pr.title));
+        gctx.shell().note(format!("  Assignees : {}", linked_github_users(&pr.assignees)));
+        gctx.shell().note(format!("  Reviewers : {}", linked_github_users(&pr.requested_reviewers)));
+        gctx.shell().note(format!("  Change requests pending: {changes}"));
         gctx.shell().note("------------------------------");
     }
 
@@ -118,8 +105,7 @@ pub fn fork(gctx: &mut GlobalContext, options: &ForkOptions<'_>) -> CliResult {
     let upstream = format!("{}/{}", options.remote, branch);
     let upstream_arg = format!("--set-upstream-to={upstream}");
     crate::utils::git::run(gctx.cwd(), &["branch", &upstream_arg])?;
-    gctx.shell()
-        .note(format!("`{branch}` is now tracking `{upstream}`"));
+    gctx.shell().note(format!("`{branch}` is now tracking `{upstream}`"));
 
     Ok(())
 }
@@ -135,9 +121,7 @@ pub fn ignore(gctx: &mut GlobalContext, options: &IgnoreOptions<'_>) -> CliResul
     }
 
     if options.patterns.is_empty() {
-        return Err(CliError::from(
-            "expected `bp git ignore <path|pattern>...` or `bp git ignore --list`",
-        ));
+        return Err(CliError::from("expected `bp git ignore <path|pattern>...` or `bp git ignore --list`"));
     }
 
     let patterns = ignore_patterns(gctx.cwd(), &repo_root, options)?;
@@ -152,17 +136,10 @@ pub fn open(gctx: &mut GlobalContext, options: &OpenOptions<'_>) -> CliResult {
     let repo = crate::utils::git::github_remote(gctx.cwd(), options.remote)?;
     let base_url = format!("https://github.com/{}/{}", repo.owner, repo.name);
     let (pr_mode, target) = open_args(options.pr, &options.targets)?;
-    let url = if pr_mode {
-        pull_request_url(gctx.cwd(), &repo.owner, &repo.name, &base_url, target)?
-    } else {
-        target_url(&base_url, target)?
-    };
+    let url = if pr_mode { pull_request_url(gctx.cwd(), &repo.owner, &repo.name, &base_url, target)? } else { target_url(&base_url, target)? };
 
     browser::open_url(&url)?;
-    gctx.shell().note(format!(
-        "Opened {}",
-        crate::utils::terminal::hyperlink(&url, &url)
-    ));
+    gctx.shell().note(format!("Opened {}", crate::utils::terminal::hyperlink(&url, &url)));
     Ok(())
 }
 
@@ -201,18 +178,10 @@ fn list_local_ignores(gctx: &mut GlobalContext, contents: &str) {
     }
 }
 
-fn ignore_patterns(
-    cwd: &Path,
-    repo_root: &Path,
-    options: &IgnoreOptions<'_>,
-) -> Result<Vec<String>, CliError> {
+fn ignore_patterns(cwd: &Path, repo_root: &Path, options: &IgnoreOptions<'_>) -> Result<Vec<String>, CliError> {
     let mut patterns = Vec::new();
     for pattern in &options.patterns {
-        let pattern = if options.raw {
-            raw_ignore_pattern(pattern)?
-        } else {
-            path_ignore_pattern(cwd, repo_root, pattern)?
-        };
+        let pattern = if options.raw { raw_ignore_pattern(pattern)? } else { path_ignore_pattern(cwd, repo_root, pattern)? };
         if !patterns.contains(&pattern) {
             patterns.push(pattern);
         }
@@ -236,18 +205,12 @@ fn path_ignore_pattern(cwd: &Path, repo_root: &Path, input: &str) -> Result<Stri
     }
 
     let path = Path::new(trimmed);
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        cwd.join(path)
-    };
+    let absolute = if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) };
     let absolute = normalize_path(&absolute);
     let repo_root = normalize_path(repo_root);
-    let relative = absolute.strip_prefix(&repo_root).map_err(|_| {
-        CliError::from(format!(
-            "`{trimmed}` is outside this repo; use --raw to add it as a pattern"
-        ))
-    })?;
+    let relative = absolute
+        .strip_prefix(&repo_root)
+        .map_err(|_| CliError::from(format!("`{trimmed}` is outside this repo; use --raw to add it as a pattern")))?;
     let mut pattern = path_to_gitignore_pattern(relative)?;
 
     if pattern.is_empty() {
@@ -270,11 +233,7 @@ fn path_is_existing_dir(cwd: &Path, path: &Path) -> bool {
 }
 
 fn path_to_gitignore_pattern(path: &Path) -> Result<String, CliError> {
-    let pattern = path
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/");
+    let pattern = path.components().map(|component| component.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
 
     if pattern.contains('\n') || pattern.contains('\r') {
         return Err(CliError::from("ignore path cannot contain a newline"));
@@ -297,21 +256,12 @@ fn normalize_path(path: &Path) -> PathBuf {
     normalized
 }
 
-fn add_local_ignores(
-    gctx: &mut GlobalContext,
-    exclude_path: &Path,
-    contents: &str,
-    patterns: &[String],
-) -> CliResult {
+fn add_local_ignores(gctx: &mut GlobalContext, exclude_path: &Path, contents: &str, patterns: &[String]) -> CliResult {
     let existing = active_ignore_lines(contents).collect::<Vec<_>>();
-    let new_patterns = patterns
-        .iter()
-        .filter(|pattern| !existing.contains(&pattern.as_str()))
-        .collect::<Vec<_>>();
+    let new_patterns = patterns.iter().filter(|pattern| !existing.contains(&pattern.as_str())).collect::<Vec<_>>();
 
     if new_patterns.is_empty() {
-        gctx.shell()
-            .note("All requested patterns are already ignored locally.");
+        gctx.shell().note("All requested patterns are already ignored locally.");
         return Ok(());
     }
 
@@ -332,17 +282,11 @@ fn add_local_ignores(
     for pattern in new_patterns {
         gctx.shell().note(format!("Ignored locally: {pattern}"));
     }
-    gctx.shell()
-        .note(format!("Updated {}", exclude_path.display()));
+    gctx.shell().note(format!("Updated {}", exclude_path.display()));
     Ok(())
 }
 
-fn remove_local_ignores(
-    gctx: &mut GlobalContext,
-    exclude_path: &Path,
-    contents: &str,
-    patterns: &[String],
-) -> CliResult {
+fn remove_local_ignores(gctx: &mut GlobalContext, exclude_path: &Path, contents: &str, patterns: &[String]) -> CliResult {
     let mut removed = Vec::new();
     let mut kept = Vec::new();
 
@@ -355,8 +299,7 @@ fn remove_local_ignores(
     }
 
     if removed.is_empty() {
-        gctx.shell()
-            .note("No matching repo-local ignore patterns found.");
+        gctx.shell().note("No matching repo-local ignore patterns found.");
         return Ok(());
     }
 
@@ -369,11 +312,9 @@ fn remove_local_ignores(
     removed.sort();
     removed.dedup();
     for pattern in removed {
-        gctx.shell()
-            .note(format!("Removed local ignore: {pattern}"));
+        gctx.shell().note(format!("Removed local ignore: {pattern}"));
     }
-    gctx.shell()
-        .note(format!("Updated {}", exclude_path.display()));
+    gctx.shell().note(format!("Updated {}", exclude_path.display()));
     Ok(())
 }
 
@@ -385,11 +326,7 @@ fn active_ignore_lines(contents: &str) -> impl Iterator<Item = &str> {
 }
 
 fn print_pr_status(gctx: &mut GlobalContext, pr: &PrStatus) {
-    let draft = if pr.is_draft {
-        format!(" {}", color_print::cformat!("<black!>[DRAFT]</>"))
-    } else {
-        String::new()
-    };
+    let draft = if pr.is_draft { format!(" {}", color_print::cformat!("<black!>[DRAFT]</>")) } else { String::new() };
     gctx.shell().note(format!(
         "{}{} {} -> {}",
         crate::utils::terminal::hyperlink(&colored_pr_label(pr.number), &pr.url),
@@ -398,27 +335,15 @@ fn print_pr_status(gctx: &mut GlobalContext, pr: &PrStatus) {
         color_print::cformat!("<black!>{}</>", pr.base_ref_name)
     ));
     gctx.shell().note(format!("  Title : {}", pr.title));
-    gctx.shell()
-        .note(format!("  State : {}", pr.status_label()));
+    gctx.shell().note(format!("  State : {}", pr.status_label()));
     if let Some(merged_at) = &pr.merged_at {
-        gctx.shell().note(format!(
-            "  Merged: {}",
-            color_print::cformat!("<black!>{merged_at}</>")
-        ));
+        gctx.shell().note(format!("  Merged: {}", color_print::cformat!("<black!>{merged_at}</>")));
     }
 }
 
-fn wait_for_merge(
-    gctx: &mut GlobalContext,
-    target: Option<&str>,
-    initial_pr: &PrStatus,
-    interval: u64,
-) -> CliResult {
+fn wait_for_merge(gctx: &mut GlobalContext, target: Option<&str>, initial_pr: &PrStatus, interval: u64) -> CliResult {
     if initial_pr.is_merged() {
-        gctx.shell().note(merged_message(
-            initial_pr.number,
-            initial_pr.merged_at.as_deref(),
-        ));
+        gctx.shell().note(merged_message(initial_pr.number, initial_pr.merged_at.as_deref()));
         return Ok(());
     }
 
@@ -443,16 +368,13 @@ fn wait_for_merge(
 
         if is_merged {
             frame.replace(&monitor.render(None))?;
-            gctx.shell()
-                .note(merged_message(number, merged_at.as_deref()));
+            gctx.shell().note(merged_message(number, merged_at.as_deref()));
             return Ok(());
         }
 
         if is_closed {
             frame.replace(&monitor.render(None))?;
-            return Err(CliError::from(format!(
-                "PR #{number} was closed without merging"
-            )));
+            return Err(CliError::from(format!("PR #{number} was closed without merging")));
         }
     }
 }
@@ -467,9 +389,7 @@ fn merged_message(number: u64, merged_at: Option<&str>) -> String {
         "{} {}{}",
         colored_pr_label(number),
         color_print::cformat!("<magenta,bold>merged</>"),
-        merged_at
-            .map(|merged_at| format!(" at {}", color_print::cformat!("<black!>{merged_at}</>")))
-            .unwrap_or_default()
+        merged_at.map(|merged_at| format!(" at {}", color_print::cformat!("<black!>{merged_at}</>"))).unwrap_or_default()
     )
 }
 
@@ -478,57 +398,34 @@ fn colored_pr_label(number: u64) -> String {
 }
 
 fn current_pr(gctx: &mut GlobalContext, target: Option<&str>) -> Result<PrStatus, CliError> {
-    let mut args = vec![
-        "pr",
-        "view",
-        "--json",
-        "number,title,url,state,isDraft,mergeStateStatus,baseRefName,headRefName,mergedAt",
-    ];
+    let mut args = vec!["pr", "view", "--json", "number,title,url,state,isDraft,mergeStateStatus,baseRefName,headRefName,mergedAt"];
     if let Some(target) = target {
         args.insert(2, target);
     }
 
     let output = crate::utils::gh::output(gctx.cwd(), &args).map_err(|e| {
         let subject = target.unwrap_or("the current branch");
-        CliError::from(format!(
-            "failed to find a pull request for {subject}: {}",
-            e.message
-        ))
+        CliError::from(format!("failed to find a pull request for {subject}: {}", e.message))
     })?;
 
-    serde_json::from_str(&output)
-        .map_err(|e| CliError::from(format!("failed to parse GitHub PR status: {e}")))
+    serde_json::from_str(&output).map_err(|e| CliError::from(format!("failed to parse GitHub PR status: {e}")))
 }
 
-fn current_checks(
-    gctx: &mut GlobalContext,
-    target: Option<&str>,
-) -> Result<Vec<PrCheck>, CliError> {
-    let mut args = vec![
-        "pr",
-        "checks",
-        "--json",
-        "bucket,name,state,workflow,completedAt,link",
-    ];
+fn current_checks(gctx: &mut GlobalContext, target: Option<&str>) -> Result<Vec<PrCheck>, CliError> {
+    let mut args = vec!["pr", "checks", "--json", "bucket,name,state,workflow,completedAt,link"];
     if let Some(target) = target {
         args.insert(2, target);
     }
 
     let output = crate::utils::gh::output_allowing_exit_codes(gctx.cwd(), &args, &[8])?;
 
-    serde_json::from_slice(&output.stdout)
-        .map_err(|e| CliError::from(format!("failed to parse GitHub PR checks: {e}")))
+    serde_json::from_slice(&output.stdout).map_err(|e| CliError::from(format!("failed to parse GitHub PR checks: {e}")))
 }
 
 fn print_check_summary(gctx: &mut GlobalContext, checks: &[PrCheck]) {
-    gctx.shell()
-        .note(format!("  Checks: {}", check_summary(checks)));
+    gctx.shell().note(format!("  Checks: {}", check_summary(checks)));
     for check in checks {
-        gctx.shell().note(format!(
-            "    {} {}",
-            check.bucket_symbol(),
-            check.display_label()
-        ));
+        gctx.shell().note(format!("    {} {}", check.bucket_symbol(), check.display_label()));
     }
 }
 
@@ -551,21 +448,12 @@ fn check_summary(checks: &[PrCheck]) -> String {
 }
 
 fn active_checks(checks: &[PrCheck]) -> String {
-    let names = checks
-        .iter()
-        .filter(|check| check.bucket == "pending")
-        .take(3)
-        .map(PrCheck::display_name)
-        .collect::<Vec<_>>();
+    let names = checks.iter().filter(|check| check.bucket == "pending").take(3).map(PrCheck::display_name).collect::<Vec<_>>();
 
     if names.is_empty() {
         String::new()
     } else {
-        format!(
-            " | {} {}",
-            color_print::cformat!("<yellow>waiting on</>"),
-            names.join(", ")
-        )
+        format!(" | {} {}", color_print::cformat!("<yellow>waiting on</>"), names.join(", "))
     }
 }
 
@@ -600,14 +488,10 @@ impl PrMonitor {
 fn add_or_reuse_remote(gctx: &mut GlobalContext, remote: &str, url: &str) -> CliResult {
     match crate::utils::git::remote_url(gctx.cwd(), remote)? {
         Some(existing_url) if existing_url == url => {
-            gctx.shell().note(format!(
-                "Remote `{remote}` already exists with the requested URL"
-            ));
+            gctx.shell().note(format!("Remote `{remote}` already exists with the requested URL"));
             Ok(())
         }
-        Some(existing_url) => Err(CliError::from(format!(
-            "remote `{remote}` already exists with URL `{existing_url}`"
-        ))),
+        Some(existing_url) => Err(CliError::from(format!("remote `{remote}` already exists with URL `{existing_url}`"))),
         None => {
             crate::utils::git::run(gctx.cwd(), &["remote", "add", remote, url])?;
             gctx.shell().note(format!("Added remote `{remote}`"));
@@ -617,24 +501,15 @@ fn add_or_reuse_remote(gctx: &mut GlobalContext, remote: &str, url: &str) -> Cli
 }
 
 fn default_branch(gctx: &mut GlobalContext, remote: &str) -> Result<String, CliError> {
-    let output =
-        crate::utils::git::output(gctx.cwd(), &["remote", "show", remote]).map_err(|e| {
-            CliError::from(format!(
-                "failed to determine default branch for `{remote}`: {}; pass --branch",
-                e.message
-            ))
-        })?;
+    let output = crate::utils::git::output(gctx.cwd(), &["remote", "show", remote])
+        .map_err(|e| CliError::from(format!("failed to determine default branch for `{remote}`: {}; pass --branch", e.message)))?;
 
     output
         .lines()
         .find_map(|line| line.trim().strip_prefix("HEAD branch: "))
         .filter(|branch| !branch.is_empty() && *branch != "(unknown)")
         .map(str::to_string)
-        .ok_or_else(|| {
-            CliError::from(format!(
-                "failed to determine default branch for `{remote}`; pass --branch"
-            ))
-        })
+        .ok_or_else(|| CliError::from(format!("failed to determine default branch for `{remote}`; pass --branch")))
 }
 
 fn switch_to_branch(gctx: &mut GlobalContext, remote: &str, branch: &str) -> CliResult {
@@ -647,18 +522,13 @@ fn switch_to_branch(gctx: &mut GlobalContext, remote: &str, branch: &str) -> Cli
     }
 }
 
-fn open_args<'a>(
-    pr_flag: bool,
-    targets: &'a [&'a str],
-) -> Result<(bool, Option<&'a str>), CliError> {
+fn open_args<'a>(pr_flag: bool, targets: &'a [&'a str]) -> Result<(bool, Option<&'a str>), CliError> {
     match targets {
         ["pr"] => Ok((true, None)),
         ["pr", target] => Ok((true, Some(*target))),
         [] => Ok((pr_flag, None)),
         [target] => Ok((pr_flag, Some(*target))),
-        _ => Err(CliError::from(
-            "expected `bp git open [pr] [issue|pull-request|commit]`",
-        )),
+        _ => Err(CliError::from("expected `bp git open [pr] [issue|pull-request|commit]`")),
     }
 }
 
@@ -667,29 +537,15 @@ fn target_url(base_url: &str, target: Option<&str>) -> Result<String, CliError> 
         None => Ok(base_url.to_string()),
         Some(target) if is_issue_number(target) => Ok(format!("{base_url}/issues/{target}")),
         Some(target) if is_commit_hash(target) => Ok(format!("{base_url}/commit/{target}")),
-        Some(target) => Err(CliError::from(format!(
-            "`{target}` is not a pull request/issue number or commit hash"
-        ))),
+        Some(target) => Err(CliError::from(format!("`{target}` is not a pull request/issue number or commit hash"))),
     }
 }
 
-fn pull_request_url(
-    cwd: &std::path::Path,
-    owner: &str,
-    repo: &str,
-    base_url: &str,
-    target: Option<&str>,
-) -> Result<String, CliError> {
+fn pull_request_url(cwd: &std::path::Path, owner: &str, repo: &str, base_url: &str, target: Option<&str>) -> Result<String, CliError> {
     let number = match target {
         Some(target) if is_issue_number(target) => target.to_string(),
-        Some(target) if is_commit_hash(target) => {
-            pull_request_for_commit(cwd, owner, repo, target)?
-        }
-        Some(target) => {
-            return Err(CliError::from(format!(
-                "`{target}` is not a pull request number or commit hash"
-            )))
-        }
+        Some(target) if is_commit_hash(target) => pull_request_for_commit(cwd, owner, repo, target)?,
+        Some(target) => return Err(CliError::from(format!("`{target}` is not a pull request number or commit hash"))),
         None => pull_request_for_current_branch(cwd)?,
     };
 
@@ -697,45 +553,16 @@ fn pull_request_url(
 }
 
 fn pull_request_for_current_branch(cwd: &std::path::Path) -> Result<String, CliError> {
-    let output =
-        crate::utils::gh::output(cwd, &["pr", "view", "--json", "number", "--jq", ".number"])
-            .map_err(|e| {
-                CliError::from(format!(
-                    "failed to find a pull request for the current branch: {}",
-                    e.message
-                ))
-            })?;
+    let output = crate::utils::gh::output(cwd, &["pr", "view", "--json", "number", "--jq", ".number"])
+        .map_err(|e| CliError::from(format!("failed to find a pull request for the current branch: {}", e.message)))?;
     non_empty_output(output, "no pull request found for the current branch")
 }
 
-fn pull_request_for_commit(
-    cwd: &std::path::Path,
-    owner: &str,
-    repo: &str,
-    commit: &str,
-) -> Result<String, CliError> {
+fn pull_request_for_commit(cwd: &std::path::Path, owner: &str, repo: &str, commit: &str) -> Result<String, CliError> {
     let api_path = format!("repos/{owner}/{repo}/commits/{commit}/pulls");
-    let output = crate::utils::gh::output(
-        cwd,
-        &[
-            "api",
-            &api_path,
-            "-H",
-            "Accept: application/vnd.github+json",
-            "--jq",
-            ".[0].number",
-        ],
-    )
-    .map_err(|e| {
-        CliError::from(format!(
-            "failed to find a pull request containing `{commit}`: {}",
-            e.message
-        ))
-    })?;
-    non_empty_output(
-        output,
-        format!("no pull request found containing `{commit}`"),
-    )
+    let output = crate::utils::gh::output(cwd, &["api", &api_path, "-H", "Accept: application/vnd.github+json", "--jq", ".[0].number"])
+        .map_err(|e| CliError::from(format!("failed to find a pull request containing `{commit}`: {}", e.message)))?;
+    non_empty_output(output, format!("no pull request found containing `{commit}`"))
 }
 
 fn non_empty_output(output: String, message: impl Into<String>) -> Result<String, CliError> {
@@ -758,11 +585,7 @@ fn is_commit_hash(value: &str) -> bool {
 fn fetch_github_user(username: &str) -> Result<String, String> {
     let url = format!("https://api.github.com/users/{username}");
     let client = reqwest::blocking::Client::new();
-    let resp = client
-        .get(&url)
-        .header("User-Agent", "branp-git-coauthor")
-        .send()
-        .map_err(|e| e.to_string())?;
+    let resp = client.get(&url).header("User-Agent", "branp-git-coauthor").send().map_err(|e| e.to_string())?;
 
     if !resp.status().is_success() {
         return Err(format!("GitHub API returned {}", resp.status()));
@@ -774,17 +597,9 @@ fn fetch_github_user(username: &str) -> Result<String, String> {
     Ok(format!("Co-authored-by: {name} <{email}>"))
 }
 
-fn fetch_open_prs(
-    client: &reqwest::blocking::Client,
-    owner: &str,
-    repo: &str,
-) -> Result<Vec<PullRequest>, String> {
+fn fetch_open_prs(client: &reqwest::blocking::Client, owner: &str, repo: &str) -> Result<Vec<PullRequest>, String> {
     let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls?state=open");
-    let resp = client
-        .get(&url)
-        .header("User-Agent", "branp-git-prs")
-        .send()
-        .map_err(|e| e.to_string())?;
+    let resp = client.get(&url).header("User-Agent", "branp-git-prs").send().map_err(|e| e.to_string())?;
 
     if !resp.status().is_success() {
         return Err(format!("GitHub API returned {}", resp.status()));
@@ -793,28 +608,16 @@ fn fetch_open_prs(
     resp.json::<Vec<PullRequest>>().map_err(|e| e.to_string())
 }
 
-fn fetch_changes_count(
-    client: &reqwest::blocking::Client,
-    owner: &str,
-    repo: &str,
-    pr_number: u64,
-) -> Result<usize, String> {
+fn fetch_changes_count(client: &reqwest::blocking::Client, owner: &str, repo: &str, pr_number: u64) -> Result<usize, String> {
     let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews");
-    let resp = client
-        .get(&url)
-        .header("User-Agent", "branp-git-prs")
-        .send()
-        .map_err(|e| e.to_string())?;
+    let resp = client.get(&url).header("User-Agent", "branp-git-prs").send().map_err(|e| e.to_string())?;
 
     if !resp.status().is_success() {
         return Err(format!("GitHub API returned {}", resp.status()));
     }
 
     let reviews: Vec<Review> = resp.json().map_err(|e| e.to_string())?;
-    Ok(reviews
-        .into_iter()
-        .filter(|r| r.state == "CHANGES_REQUESTED")
-        .count())
+    Ok(reviews.into_iter().filter(|r| r.state == "CHANGES_REQUESTED").count())
 }
 
 #[derive(Deserialize)]
@@ -837,12 +640,7 @@ struct SimpleUser {
 fn linked_github_users(users: &[SimpleUser]) -> String {
     users
         .iter()
-        .map(|user| {
-            crate::utils::terminal::hyperlink(
-                &user.login,
-                &format!("https://github.com/{}", user.login),
-            )
-        })
+        .map(|user| crate::utils::terminal::hyperlink(&user.login, &format!("https://github.com/{}", user.login)))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -890,35 +688,20 @@ impl PrStatus {
         match self.merge_state_status.as_deref() {
             Some("BLOCKED") => format!("{state}, {}", color_print::cformat!("<yellow>blocked</>")),
             Some("BEHIND") => {
-                format!(
-                    "{state}, {}",
-                    color_print::cformat!("<yellow>behind base</>")
-                )
+                format!("{state}, {}", color_print::cformat!("<yellow>behind base</>"))
             }
             Some("CLEAN") => {
-                format!(
-                    "{state}, {}",
-                    color_print::cformat!("<green>ready to merge</>")
-                )
+                format!("{state}, {}", color_print::cformat!("<green>ready to merge</>"))
             }
             Some("DIRTY") => {
-                format!(
-                    "{state}, {}",
-                    color_print::cformat!("<red,bold>has conflicts</>")
-                )
+                format!("{state}, {}", color_print::cformat!("<red,bold>has conflicts</>"))
             }
             Some("DRAFT") => format!("{state}, {}", color_print::cformat!("<black!>draft</>")),
             Some("HAS_HOOKS") => {
-                format!(
-                    "{state}, {}",
-                    color_print::cformat!("<yellow>waiting on hooks</>")
-                )
+                format!("{state}, {}", color_print::cformat!("<yellow>waiting on hooks</>"))
             }
             Some("UNKNOWN") | None => state.to_string(),
-            Some(status) => format!(
-                "{state}, {}",
-                color_print::cformat!("<yellow>{}</>", enum_label(status))
-            ),
+            Some(status) => format!("{state}, {}", color_print::cformat!("<yellow>{}</>", enum_label(status))),
         }
     }
 }
@@ -941,11 +724,7 @@ impl PrCheck {
     }
 
     fn display_label(&self) -> String {
-        format!(
-            "{} ({})",
-            self.display_name(),
-            colored_check_state(&self.bucket, &self.state)
-        )
+        format!("{} ({})", self.display_name(), colored_check_state(&self.bucket, &self.state))
     }
 
     fn bucket_symbol(&self) -> String {
@@ -1008,18 +787,8 @@ mod tests {
         let cwd = Path::new("repo/packages/app");
         let repo_root = Path::new("repo");
 
-        assert_eq!(
-            path_ignore_pattern(cwd, repo_root, "target/debug.log")
-                .ok()
-                .as_deref(),
-            Some("packages/app/target/debug.log")
-        );
-        assert_eq!(
-            path_ignore_pattern(cwd, repo_root, "../shared/cache")
-                .ok()
-                .as_deref(),
-            Some("packages/shared/cache")
-        );
+        assert_eq!(path_ignore_pattern(cwd, repo_root, "target/debug.log").ok().as_deref(), Some("packages/app/target/debug.log"));
+        assert_eq!(path_ignore_pattern(cwd, repo_root, "../shared/cache").ok().as_deref(), Some("packages/shared/cache"));
     }
 
     #[test]
