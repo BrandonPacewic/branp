@@ -15,13 +15,23 @@ use crate::utils::terminal::{supports_dynamic_lines, DynamicRenderLoop};
 
 mod languages;
 
-const TABLE_WIDTH: usize = 88;
+const LANGUAGE_COLUMN_WIDTH: usize = 36;
+const DEFAULT_NUMBER_COLUMN_WIDTH: usize = 12;
+const NUMBER_COLUMNS: usize = 4;
+const DEFAULT_NUMBER_COLUMN_DIGITS: usize = 8;
 const READ_BUFFER_SIZE: usize = 256 * 1024;
 const INITIAL_DISCOVERY_ITERATIONS: usize = 128;
 const LIVE_RENDER_INTERVAL: Duration = Duration::from_millis(50);
 
 pub struct ClocOptions<'a> {
     pub paths: Vec<&'a str>,
+    pub live: bool,
+    pub commas: bool,
+}
+
+#[derive(Clone, Copy)]
+struct RenderOptions {
+    commas: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -69,11 +79,21 @@ pub fn cloc(gctx: &mut GlobalContext, options: &ClocOptions<'_>) -> CliResult {
 
     if gctx.shell().is_quiet() {
         let _ = count_paths(&paths);
-    } else if supports_dynamic_lines() {
-        let _ = count_paths_live(&paths)?;
+    } else if options.live && supports_dynamic_lines() {
+        let _ = count_paths_live(
+            &paths,
+            RenderOptions {
+                commas: options.commas,
+            },
+        )?;
     } else {
         let report = count_paths(&paths);
-        print_report(&report);
+        print_report(
+            &report,
+            RenderOptions {
+                commas: options.commas,
+            },
+        );
     }
 
     Ok(())
@@ -96,7 +116,7 @@ fn count_paths(paths: &[PathBuf]) -> CountReport {
     }
 }
 
-fn count_paths_live(paths: &[PathBuf]) -> io::Result<CountReport> {
+fn count_paths_live(paths: &[PathBuf], render_options: RenderOptions) -> io::Result<CountReport> {
     let start = Instant::now();
     let initial = discover_initial_files(paths);
     let worker_count = thread::available_parallelism()
@@ -106,7 +126,7 @@ fn count_paths_live(paths: &[PathBuf]) -> io::Result<CountReport> {
     let work_queue = Arc::new(WorkQueue::new(initial.files.clone()));
     let (sender, receiver) = mpsc::channel();
     let mut state = LiveState::new(&initial);
-    let mut frame = DynamicRenderLoop::start(&state.render(start.elapsed()))?;
+    let mut frame = DynamicRenderLoop::start(&state.render(start.elapsed(), render_options))?;
     let mut last_render = Instant::now();
 
     thread::scope(|scope| {
@@ -154,12 +174,12 @@ fn count_paths_live(paths: &[PathBuf]) -> io::Result<CountReport> {
                     }
                     if state.is_done(worker_count) || last_render.elapsed() >= LIVE_RENDER_INTERVAL
                     {
-                        frame.advance(&state.render(start.elapsed()))?;
+                        frame.advance(&state.render(start.elapsed(), render_options))?;
                         last_render = Instant::now();
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    frame.advance(&state.render(start.elapsed()))?;
+                    frame.advance(&state.render(start.elapsed(), render_options))?;
                     last_render = Instant::now();
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -167,7 +187,7 @@ fn count_paths_live(paths: &[PathBuf]) -> io::Result<CountReport> {
         }
 
         let report = state.into_report(start.elapsed());
-        frame.replace(&render_report(&report))?;
+        frame.replace(&render_report(&report, render_options))?;
         Ok(report)
     })
 }
@@ -444,8 +464,8 @@ impl LiveState {
         self.discovery_done && self.workers_done >= worker_count
     }
 
-    fn render(&self, elapsed: Duration) -> Vec<String> {
-        render_report_with_rows(&self.to_report(elapsed), self.render_rows(false))
+    fn render(&self, elapsed: Duration, options: RenderOptions) -> Vec<String> {
+        render_report_with_rows(&self.to_report(elapsed), self.render_rows(false), options)
     }
 
     fn render_languages(&self, final_render: bool) -> Vec<&'static str> {
@@ -685,30 +705,43 @@ fn count_file(path: &Path, language: &str) -> io::Result<Option<Count>> {
     )))
 }
 
-fn print_report(report: &CountReport) {
-    for line in render_report(report) {
+fn print_report(report: &CountReport, options: RenderOptions) {
+    for line in render_report(report, options) {
         println!("{line}");
     }
 }
 
-fn render_report(report: &CountReport) -> Vec<String> {
-    render_report_with_rows(report, sorted_rows(&report.by_language))
+fn render_report(report: &CountReport, options: RenderOptions) -> Vec<String> {
+    render_report_with_rows(report, sorted_rows(&report.by_language), options)
 }
 
-fn render_report_with_rows(report: &CountReport, rows: Vec<(&'static str, Count)>) -> Vec<String> {
+fn render_report_with_rows(
+    report: &CountReport,
+    rows: Vec<(&'static str, Count)>,
+    options: RenderOptions,
+) -> Vec<String> {
     let total = total_count(&report.by_language);
     let elapsed_secs = report.elapsed.as_secs_f64();
     let files_per_second = rate(report.stats.text_files, elapsed_secs);
     let lines_per_second = rate(total.lines(), elapsed_secs);
     let mut lines = Vec::new();
 
-    lines.push(format!("{:>8} text files.", report.stats.text_files));
-    lines.push(format!("{:>8} files ignored.", report.stats.ignored_files));
+    lines.push(format!(
+        "{:>8} text files.",
+        format_u64(report.stats.text_files, options)
+    ));
+    lines.push(format!(
+        "{:>8} files ignored.",
+        format_u64(report.stats.ignored_files, options)
+    ));
     lines.push(String::new());
     lines.push(format!(
-        "{elapsed_secs:.2} s, {files_per_second:.1} files/s, {lines_per_second:.1} lines/s"
+        "{} s, {} files/s, {} lines/s",
+        format_f64(elapsed_secs, 2, options),
+        format_f64(files_per_second, 1, options),
+        format_f64(lines_per_second, 1, options)
     ));
-    lines.extend(render_table(rows, total));
+    lines.extend(render_table(rows, total, options));
     lines
 }
 
@@ -731,31 +764,117 @@ fn sorted_rows(by_language: &HashMap<&'static str, Count>) -> Vec<(&'static str,
 fn render_table(
     rows: impl IntoIterator<Item = (&'static str, Count)>,
     total: Count,
+    options: RenderOptions,
 ) -> Vec<String> {
     let mut lines = Vec::new();
-    let separator = "-".repeat(TABLE_WIDTH);
+    let number_width = number_column_width(total);
+    let table_width = LANGUAGE_COLUMN_WIDTH + NUMBER_COLUMNS * (number_width + 1);
+    let separator = "-".repeat(table_width);
 
     lines.push(separator.clone());
     lines.push(format!(
-        "{:<36} {:>12} {:>12} {:>12} {:>12}",
-        "Language", "files", "blank", "comment", "code"
+        "{:<language_width$} {:>number_width$} {:>number_width$} {:>number_width$} {:>number_width$}",
+        "Language",
+        "files",
+        "blank",
+        "comment",
+        "code",
+        language_width = LANGUAGE_COLUMN_WIDTH,
+        number_width = number_width,
     ));
     lines.push(separator.clone());
 
     for (language, count) in rows {
         lines.push(format!(
-            "{:<36} {:>12} {:>12} {:>12} {:>12}",
-            language, count.files, count.blank, count.comment, count.code
+            "{:<language_width$} {:>number_width$} {:>number_width$} {:>number_width$} {:>number_width$}",
+            language,
+            format_u64(count.files, options),
+            format_u64(count.blank, options),
+            format_u64(count.comment, options),
+            format_u64(count.code, options),
+            language_width = LANGUAGE_COLUMN_WIDTH,
+            number_width = number_width,
         ));
     }
 
     lines.push(separator.clone());
     lines.push(format!(
-        "{:<36} {:>12} {:>12} {:>12} {:>12}",
-        "SUM:", total.files, total.blank, total.comment, total.code
+        "{:<language_width$} {:>number_width$} {:>number_width$} {:>number_width$} {:>number_width$}",
+        "SUM:",
+        format_u64(total.files, options),
+        format_u64(total.blank, options),
+        format_u64(total.comment, options),
+        format_u64(total.code, options),
+        language_width = LANGUAGE_COLUMN_WIDTH,
+        number_width = number_width,
     ));
     lines.push(separator);
     lines
+}
+
+fn number_column_width(total: Count) -> usize {
+    let max_count = [total.files, total.blank, total.comment, total.code]
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+    DEFAULT_NUMBER_COLUMN_WIDTH
+        + digit_count(max_count).saturating_sub(DEFAULT_NUMBER_COLUMN_DIGITS)
+}
+
+fn digit_count(value: u64) -> usize {
+    if value == 0 {
+        return 1;
+    }
+
+    let mut digits = 0;
+    let mut value = value;
+    while value > 0 {
+        digits += 1;
+        value /= 10;
+    }
+    digits
+}
+
+fn format_u64(value: u64, options: RenderOptions) -> String {
+    if options.commas {
+        format_integer_with_commas(value.to_string())
+    } else {
+        value.to_string()
+    }
+}
+
+fn format_f64(value: f64, precision: usize, options: RenderOptions) -> String {
+    let value = format!("{value:.precision$}");
+    if !options.commas {
+        return value;
+    }
+
+    let Some((integer, fraction)) = value.split_once('.') else {
+        return format_integer_with_commas(value);
+    };
+
+    format!(
+        "{}.{}",
+        format_integer_with_commas(integer.to_string()),
+        fraction
+    )
+}
+
+fn format_integer_with_commas(value: String) -> String {
+    let mut formatted = String::with_capacity(value.len() + value.len() / 3);
+    let first_group_len = value.len() % 3;
+
+    for (index, ch) in value.chars().enumerate() {
+        if index > 0
+            && (index == first_group_len
+                || (index > first_group_len && (index - first_group_len) % 3 == 0))
+        {
+            formatted.push(',');
+        }
+        formatted.push(ch);
+    }
+
+    formatted
 }
 
 fn total_count(by_language: &HashMap<&'static str, Count>) -> Count {
@@ -941,6 +1060,52 @@ mod tests {
                 code: 3
             }
         );
+    }
+
+    #[test]
+    fn formats_integer_groups_with_commas() {
+        assert_eq!(format_u64(82, RenderOptions { commas: true }), "82");
+        assert_eq!(
+            format_u64(19_008_687, RenderOptions { commas: true }),
+            "19,008,687"
+        );
+        assert_eq!(
+            format_u64(19_008_687, RenderOptions { commas: false }),
+            "19008687"
+        );
+    }
+
+    #[test]
+    fn expands_table_width_starting_at_nine_digits() {
+        let eight_digits = Count {
+            files: 1,
+            blank: 1,
+            comment: 1,
+            code: 99_999_999,
+        };
+        let nine_digits = Count {
+            files: 1,
+            blank: 1,
+            comment: 1,
+            code: 100_000_000,
+        };
+
+        let eight_digit_lines = render_table(
+            [("Rust", eight_digits)],
+            eight_digits,
+            RenderOptions { commas: true },
+        );
+        let nine_digit_lines = render_table(
+            [("Rust", nine_digits)],
+            nine_digits,
+            RenderOptions { commas: true },
+        );
+
+        assert_eq!(eight_digit_lines[0].len(), 88);
+        assert_eq!(nine_digit_lines[0].len(), 92);
+        assert!(nine_digit_lines
+            .iter()
+            .any(|line| line.contains("100,000,000")));
     }
 
     fn unique_temp_dir() -> PathBuf {
