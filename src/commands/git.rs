@@ -15,33 +15,17 @@ pub fn command() -> Command {
         .subcommand(
             Command::new("coauthor")
                 .about("Generate GitHub no-reply co-author lines")
-                .arg(
-                    Arg::new("usernames")
-                        .help("One or more GitHub usernames")
-                        .required(true)
-                        .num_args(1..)
-                        .value_name("USERNAME"),
-                ),
+                .arg(Arg::new("usernames").help("One or more GitHub usernames").required(true).num_args(1..).value_name("USERNAME")),
         )
         .subcommand(
             Command::new("prs")
                 .about("List open pull requests in this GitHub repo")
-                .arg(
-                    Arg::new("remote")
-                        .short('r')
-                        .long("remote")
-                        .help("Git remote to use")
-                        .default_value("origin"),
-                ),
+                .arg(Arg::new("remote").short('r').long("remote").help("Git remote to use").default_value("origin")),
         )
         .subcommand(
             Command::new("check")
                 .about("Monitor PR checks until the PR is merged")
-                .arg(
-                    Arg::new("target")
-                        .help("Pull request number, URL, or branch; defaults to the current branch PR")
-                        .value_name("PR|URL|BRANCH"),
-                )
+                .arg(Arg::new("target").help("Pull request number, URL, or branch; defaults to the current branch PR").value_name("PR|URL|BRANCH"))
                 .arg(
                     Arg::new("interval")
                         .short('i')
@@ -51,27 +35,14 @@ pub fn command() -> Command {
                         .value_parser(clap::value_parser!(u64).range(1..)),
                 )
                 .arg(
-                    Arg::new("once")
-                        .long("once")
-                        .help("Show the current PR status and checks without waiting for merge")
-                        .action(ArgAction::SetTrue),
+                    Arg::new("once").long("once").help("Show the current PR status and checks without waiting for merge").action(ArgAction::SetTrue),
                 ),
         )
         .subcommand(
             Command::new("fork")
                 .about("Add and track a fork remote branch for local PR edits")
-                .arg(
-                    Arg::new("remote")
-                        .help("Fork remote name to add or reuse")
-                        .required(true)
-                        .value_name("REMOTE"),
-                )
-                .arg(
-                    Arg::new("url")
-                        .help("Fork Git URL")
-                        .required(true)
-                        .value_name("URL"),
-                )
+                .arg(Arg::new("remote").help("Fork remote name to add or reuse").required(true).value_name("REMOTE"))
+                .arg(Arg::new("url").help("Fork Git URL").required(true).value_name("URL"))
                 .arg(
                     Arg::new("branch")
                         .short('b')
@@ -83,18 +54,8 @@ pub fn command() -> Command {
         .subcommand(
             Command::new("ignore")
                 .about("Add repo-local ignore patterns without modifying .gitignore")
-                .arg(
-                    Arg::new("patterns")
-                        .help("Paths or patterns to ignore locally")
-                        .num_args(1..)
-                        .value_name("PATH|PATTERN"),
-                )
-                .arg(
-                    Arg::new("raw")
-                        .long("raw")
-                        .help("Treat arguments as literal gitignore patterns")
-                        .action(ArgAction::SetTrue),
-                )
+                .arg(Arg::new("patterns").help("Paths or patterns to ignore locally").num_args(1..).value_name("PATH|PATTERN"))
+                .arg(Arg::new("raw").long("raw").help("Treat arguments as literal gitignore patterns").action(ArgAction::SetTrue))
                 .arg(
                     Arg::new("list")
                         .long("list")
@@ -122,19 +83,8 @@ pub fn command() -> Command {
                         .short('p')
                         .action(ArgAction::SetTrue),
                 )
-                .arg(
-                    Arg::new("targets")
-                        .help("Optional `pr`, issue/PR number, or commit hash")
-                        .num_args(0..=2)
-                        .value_name("TARGET"),
-                )
-                .arg(
-                    Arg::new("remote")
-                        .short('r')
-                        .long("remote")
-                        .help("Git remote to use")
-                        .default_value("origin"),
-                ),
+                .arg(Arg::new("targets").help("Optional `pr`, issue/PR number, or commit hash").num_args(0..=2).value_name("TARGET"))
+                .arg(Arg::new("remote").short('r').long("remote").help("Git remote to use").default_value("origin")),
         )
 }
 
@@ -151,11 +101,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
 }
 
 fn coauthor(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
-    let usernames = args
-        .get_many::<String>("usernames")
-        .unwrap()
-        .map(String::as_str)
-        .collect();
+    let usernames = args.get_many::<String>("usernames").unwrap().map(String::as_str).collect();
     ops::coauthor(gctx, &ops::CoauthorOptions { usernames })
 }
 
@@ -184,10 +130,7 @@ fn fork(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
 
 fn ignore(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let options = ops::IgnoreOptions {
-        patterns: args
-            .get_many::<String>("patterns")
-            .map(|values| values.map(String::as_str).collect())
-            .unwrap_or_default(),
+        patterns: args.get_many::<String>("patterns").map(|values| values.map(String::as_str).collect()).unwrap_or_default(),
         raw: args.get_flag("raw"),
         list: args.get_flag("list"),
         remove: args.get_flag("remove"),
@@ -196,20 +139,11 @@ fn ignore(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
 }
 
 fn open(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
-    let targets = args
-        .get_many::<String>("targets")
-        .map(|values| values.map(String::as_str).collect::<Vec<_>>())
-        .unwrap_or_default();
-    let options = ops::OpenOptions {
-        remote: args.get_one::<String>("remote").unwrap(),
-        pr: args.get_flag("pr"),
-        targets,
-    };
+    let targets = args.get_many::<String>("targets").map(|values| values.map(String::as_str).collect::<Vec<_>>()).unwrap_or_default();
+    let options = ops::OpenOptions { remote: args.get_one::<String>("remote").unwrap(), pr: args.get_flag("pr"), targets };
     ops::open(gctx, &options)
 }
 
 fn required<'a>(args: &'a ArgMatches, name: &str) -> Result<&'a str, CliError> {
-    args.get_one::<String>(name)
-        .map(String::as_str)
-        .ok_or_else(|| CliError::from(format!("missing required argument `{name}`")))
+    args.get_one::<String>(name).map(String::as_str).ok_or_else(|| CliError::from(format!("missing required argument `{name}`")))
 }

@@ -125,12 +125,12 @@ run_check "rust_toolchain" ensure_rust_toolchain
 run_check "rust_version" check_rust_version
 run_check "check_default_branch" check_default_branch
 run_check "cargo_fmt" pinned_cargo fmt --all -- --check
-run_check "cargo_clippy" pinned_cargo clippy --all-targets --all-features -- -D warnings
+run_check "cargo_clippy" pinned_cargo clippy --workspace --all-targets --all-features -- -D warnings
 run_check "check_large_files" check_large_files
 run_check "check_merge_conflicts" check_merge_conflicts
 
 if [[ "$FAST" -eq 0 ]]; then
-	run_check "build" pinned_cargo build
+	run_check "build" pinned_cargo build --workspace
 fi
 
 echo ""

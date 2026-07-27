@@ -9,12 +9,7 @@ use crate::errors::{CliError, CliResult};
 pub fn command() -> Command {
     Command::new("sample-gen")
         .about("Generate sample input/output files for a given C++ file")
-        .arg(
-            Arg::new("file")
-                .help("The file to run on")
-                .required(true)
-                .index(1),
-        )
+        .arg(Arg::new("file").help("The file to run on").required(true).index(1))
 }
 
 pub fn exec(_gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
@@ -33,8 +28,7 @@ pub fn exec(_gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     File::create(&test_input)?;
     File::create(&test_output)?;
 
-    let editor =
-        env::var("EDITOR").map_err(|_| CliError::from("EDITOR environment variable not set"))?;
+    let editor = env::var("EDITOR").map_err(|_| CliError::from("EDITOR environment variable not set"))?;
 
     ProcessCommand::new(&editor).arg(&test_input).status()?;
     ProcessCommand::new(&editor).arg(&test_output).status()?;

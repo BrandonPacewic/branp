@@ -90,20 +90,10 @@ pub fn cloc(gctx: &mut GlobalContext, options: &ClocOptions<'_>) -> CliResult {
     if gctx.shell().is_quiet() {
         let _ = count_paths(&paths);
     } else if options.live && supports_dynamic_lines() {
-        let _ = count_paths_live(
-            &paths,
-            RenderOptions {
-                commas: options.commas,
-            },
-        )?;
+        let _ = count_paths_live(&paths, RenderOptions { commas: options.commas })?;
     } else {
         let report = count_paths(&paths);
-        print_report(
-            &report,
-            RenderOptions {
-                commas: options.commas,
-            },
-        );
+        print_report(&report, RenderOptions { commas: options.commas });
     }
 
     Ok(())
@@ -137,10 +127,7 @@ fn count_paths(paths: &[PathBuf]) -> CountReport {
 fn count_paths_live(paths: &[PathBuf], render_options: RenderOptions) -> io::Result<CountReport> {
     let start = Instant::now();
     let initial = discover_initial_files(paths);
-    let worker_count = thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(1)
-        .max(1);
+    let worker_count = thread::available_parallelism().map(usize::from).unwrap_or(1).max(1);
     let work_queue = Arc::new(WorkQueue::new(initial.files.clone()));
     let (sender, receiver) = mpsc::channel();
     let mut state = LiveState::new(&initial);
@@ -164,18 +151,11 @@ fn count_paths_live(paths: &[PathBuf], render_options: RenderOptions) -> io::Res
             let sender = sender.clone();
             scope.spawn(move || {
                 while let Some(file) = work_queue.pop() {
-                    let count =
-                        count_file(&file.path, file.syntax)
-                            .ok()
-                            .flatten()
-                            .map(|mut count| {
-                                count.files = 1;
-                                count
-                            });
-                    let _ = sender.send(LiveEvent::FileCounted {
-                        language: file.language,
-                        count,
+                    let count = count_file(&file.path, file.syntax).ok().flatten().map(|mut count| {
+                        count.files = 1;
+                        count
                     });
+                    let _ = sender.send(LiveEvent::FileCounted { language: file.language, count });
                 }
                 let _ = sender.send(LiveEvent::WorkerDone);
             });
@@ -190,8 +170,7 @@ fn count_paths_live(paths: &[PathBuf], render_options: RenderOptions) -> io::Res
                     while let Ok(event) = receiver.try_recv() {
                         state.apply(event);
                     }
-                    if state.is_done(worker_count) || last_render.elapsed() >= LIVE_RENDER_INTERVAL
-                    {
+                    if state.is_done(worker_count) || last_render.elapsed() >= LIVE_RENDER_INTERVAL {
                         frame.advance(&state.render(start.elapsed(), render_options))?;
                         last_render = Instant::now();
                     }
@@ -245,19 +224,10 @@ fn discover_initial_files(paths: &[PathBuf]) -> InitialDiscovery {
         );
     }
 
-    InitialDiscovery {
-        files,
-        queue,
-        language_files,
-        stats,
-    }
+    InitialDiscovery { files, queue, language_files, stats }
 }
 
-fn discover_remaining_files(
-    mut discovery_queue: VecDeque<PathBuf>,
-    work_queue: &WorkQueue,
-    sender: &mpsc::Sender<LiveEvent>,
-) {
+fn discover_remaining_files(mut discovery_queue: VecDeque<PathBuf>, work_queue: &WorkQueue, sender: &mpsc::Sender<LiveEvent>) {
     while let Some(path) = discovery_queue.pop_front() {
         discover_path(
             path,
@@ -274,12 +244,7 @@ fn discover_remaining_files(
     }
 }
 
-fn discover_path(
-    path: PathBuf,
-    queue: &mut VecDeque<PathBuf>,
-    mut on_file: impl FnMut(CountedFile),
-    mut on_ignored_file: impl FnMut(),
-) {
+fn discover_path(path: PathBuf, queue: &mut VecDeque<PathBuf>, mut on_file: impl FnMut(CountedFile), mut on_ignored_file: impl FnMut()) {
     let Ok(metadata) = fs::symlink_metadata(&path) else {
         return;
     };
@@ -322,13 +287,7 @@ struct WorkQueueState {
 
 impl WorkQueue {
     fn new(files: Vec<CountedFile>) -> Self {
-        Self {
-            state: Mutex::new(WorkQueueState {
-                files: files.into(),
-                done: false,
-            }),
-            available: Condvar::new(),
-        }
+        Self { state: Mutex::new(WorkQueueState { files: files.into(), done: false }), available: Condvar::new() }
     }
 
     fn push(&self, file: CountedFile) {
@@ -380,14 +339,9 @@ impl WorkQueue {
 }
 
 enum LiveEvent {
-    FileDiscovered {
-        language: &'static str,
-    },
+    FileDiscovered { language: &'static str },
     FileIgnored,
-    FileCounted {
-        language: &'static str,
-        count: Option<Count>,
-    },
+    FileCounted { language: &'static str, count: Option<Count> },
     DiscoveryDone,
     WorkerDone,
 }
@@ -403,17 +357,10 @@ struct LiveState {
 impl LiveState {
     fn new(initial: &InitialDiscovery) -> Self {
         let mut ordered_languages = initial.language_files.iter().collect::<Vec<_>>();
-        ordered_languages.sort_by(
-            |(left_language, left_files), (right_language, right_files)| {
-                right_files
-                    .cmp(left_files)
-                    .then_with(|| left_language.cmp(right_language))
-            },
-        );
-        let ordered_languages = ordered_languages
-            .into_iter()
-            .map(|(language, _)| *language)
-            .collect();
+        ordered_languages.sort_by(|(left_language, left_files), (right_language, right_files)| {
+            right_files.cmp(left_files).then_with(|| left_language.cmp(right_language))
+        });
+        let ordered_languages = ordered_languages.into_iter().map(|(language, _)| *language).collect();
 
         Self {
             by_language: HashMap::new(),
@@ -466,54 +413,28 @@ impl LiveState {
     fn render_languages(&self, final_render: bool) -> Vec<&'static str> {
         let mut languages = self.ordered_languages.clone();
         if final_render {
-            languages.retain(|language| {
-                self.by_language
-                    .get(language)
-                    .map(|count| count.files > 0)
-                    .unwrap_or(false)
-            });
+            languages.retain(|language| self.by_language.get(language).map(|count| count.files > 0).unwrap_or(false));
         }
         languages.sort_by(|left_language, right_language| {
-            let left_count = self
-                .by_language
-                .get(left_language)
-                .copied()
-                .unwrap_or_default();
-            let right_count = self
-                .by_language
-                .get(right_language)
-                .copied()
-                .unwrap_or_default();
+            let left_count = self.by_language.get(left_language).copied().unwrap_or_default();
+            let right_count = self.by_language.get(right_language).copied().unwrap_or_default();
             right_count
                 .code
                 .cmp(&left_count.code)
                 .then_with(|| right_count.files.cmp(&left_count.files))
-                .then_with(|| {
-                    self.language_index(left_language)
-                        .cmp(&self.language_index(right_language))
-                })
+                .then_with(|| self.language_index(left_language).cmp(&self.language_index(right_language)))
                 .then_with(|| left_language.cmp(right_language))
         });
         languages
     }
 
     fn language_index(&self, language: &'static str) -> usize {
-        self.ordered_languages
-            .iter()
-            .position(|candidate| *candidate == language)
-            .unwrap_or(usize::MAX)
+        self.ordered_languages.iter().position(|candidate| *candidate == language).unwrap_or(usize::MAX)
     }
 
     fn to_report(&self, elapsed: Duration) -> CountReport {
         let text_files = total_count(&self.by_language).files;
-        CountReport {
-            by_language: self.by_language.clone(),
-            stats: DiscoveryStats {
-                text_files,
-                ignored_files: self.ignored_files,
-            },
-            elapsed,
-        }
+        CountReport { by_language: self.by_language.clone(), stats: DiscoveryStats { text_files, ignored_files: self.ignored_files }, elapsed }
     }
 
     fn into_report(self, elapsed: Duration) -> CountReport {
@@ -523,12 +444,7 @@ impl LiveState {
     fn render_rows(&self, final_render: bool) -> Vec<(&'static str, Count)> {
         self.render_languages(final_render)
             .into_iter()
-            .map(|language| {
-                (
-                    language,
-                    self.by_language.get(language).copied().unwrap_or_default(),
-                )
-            })
+            .map(|language| (language, self.by_language.get(language).copied().unwrap_or_default()))
             .collect()
     }
 }
@@ -592,10 +508,7 @@ fn canonical_language(language: &'static str) -> &'static str {
 }
 
 fn should_skip_dir(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some(".git" | ".hg" | ".svn")
-    )
+    matches!(path.file_name().and_then(|name| name.to_str()), Some(".git" | ".hg" | ".svn"))
 }
 
 fn should_skip_file(path: &Path) -> bool {
@@ -627,10 +540,7 @@ fn should_skip_file(path: &Path) -> bool {
 }
 
 fn count_paths_parallel(paths: &[PathBuf]) -> (HashMap<&'static str, Count>, DiscoveryStats, u64) {
-    let worker_count = thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(1)
-        .max(1);
+    let worker_count = thread::available_parallelism().map(usize::from).unwrap_or(1).max(1);
     let work_queue = Arc::new(WorkQueue::new(Vec::new()));
 
     thread::scope(|scope| {
@@ -645,9 +555,7 @@ fn count_paths_parallel(paths: &[PathBuf]) -> (HashMap<&'static str, Count>, Dis
                 while work_queue.pop_batch(&mut files) {
                     for file in files.drain(..) {
                         if let Ok(Some(file_count)) = count_file(&file.path, file.syntax) {
-                            let count = by_language
-                                .entry(file.language)
-                                .or_insert_with(Count::default);
+                            let count = by_language.entry(file.language).or_insert_with(Count::default);
                             count.files += 1;
                             count.add(file_count);
                         } else {
@@ -668,10 +576,7 @@ fn count_paths_parallel(paths: &[PathBuf]) -> (HashMap<&'static str, Count>, Dis
             if let Ok((by_language, worker_ignored_files)) = worker.join() {
                 ignored_files += worker_ignored_files;
                 for (language, count) in by_language {
-                    total
-                        .entry(language)
-                        .or_insert_with(Count::default)
-                        .add(count);
+                    total.entry(language).or_insert_with(Count::default).add(count);
                 }
             }
         }
@@ -701,17 +606,10 @@ fn collect_files_into_queue(paths: &[PathBuf], work_queue: &WorkQueue) -> Discov
 }
 
 fn counted_file(path: PathBuf, language: &'static str) -> CountedFile {
-    CountedFile {
-        path,
-        language,
-        syntax: languages::comment_syntax_for_language(language),
-    }
+    CountedFile { path, language, syntax: languages::comment_syntax_for_language(language) }
 }
 
-fn count_file(
-    path: &Path,
-    syntax: Option<&'static languages::CommentSyntax>,
-) -> io::Result<Option<Count>> {
+fn count_file(path: &Path, syntax: Option<&'static languages::CommentSyntax>) -> io::Result<Option<Count>> {
     let mut file = File::open(path)?;
     let mut bytes = Vec::new();
     let mut buffer = [0; READ_BUFFER_SIZE];
@@ -742,25 +640,15 @@ fn render_report(report: &CountReport, options: RenderOptions) -> Vec<String> {
     render_report_with_rows(report, sorted_rows(&report.by_language), options)
 }
 
-fn render_report_with_rows(
-    report: &CountReport,
-    rows: Vec<(&'static str, Count)>,
-    options: RenderOptions,
-) -> Vec<String> {
+fn render_report_with_rows(report: &CountReport, rows: Vec<(&'static str, Count)>, options: RenderOptions) -> Vec<String> {
     let total = total_count(&report.by_language);
     let elapsed_secs = report.elapsed.as_secs_f64();
     let files_per_second = rate(report.stats.text_files, elapsed_secs);
     let lines_per_second = rate(total.lines(), elapsed_secs);
     let mut lines = Vec::new();
 
-    lines.push(format!(
-        "{:>8} text files.",
-        format_u64(report.stats.text_files, options)
-    ));
-    lines.push(format!(
-        "{:>8} files ignored.",
-        format_u64(report.stats.ignored_files, options)
-    ));
+    lines.push(format!("{:>8} text files.", format_u64(report.stats.text_files, options)));
+    lines.push(format!("{:>8} files ignored.", format_u64(report.stats.ignored_files, options)));
     lines.push(String::new());
     lines.push(format!(
         "{} s, {} files/s, {} lines/s",
@@ -774,25 +662,13 @@ fn render_report_with_rows(
 
 fn sorted_rows(by_language: &HashMap<&'static str, Count>) -> Vec<(&'static str, Count)> {
     let mut rows = by_language.iter().collect::<Vec<_>>();
-    rows.sort_by(
-        |(left_language, left_count), (right_language, right_count)| {
-            right_count
-                .code
-                .cmp(&left_count.code)
-                .then_with(|| right_count.files.cmp(&left_count.files))
-                .then_with(|| left_language.cmp(right_language))
-        },
-    );
-    rows.into_iter()
-        .map(|(language, count)| (*language, *count))
-        .collect()
+    rows.sort_by(|(left_language, left_count), (right_language, right_count)| {
+        right_count.code.cmp(&left_count.code).then_with(|| right_count.files.cmp(&left_count.files)).then_with(|| left_language.cmp(right_language))
+    });
+    rows.into_iter().map(|(language, count)| (*language, *count)).collect()
 }
 
-fn render_table(
-    rows: impl IntoIterator<Item = (&'static str, Count)>,
-    total: Count,
-    options: RenderOptions,
-) -> Vec<String> {
+fn render_table(rows: impl IntoIterator<Item = (&'static str, Count)>, total: Count, options: RenderOptions) -> Vec<String> {
     let mut lines = Vec::new();
     let number_width = number_column_width(total);
     let table_width = LANGUAGE_COLUMN_WIDTH + NUMBER_COLUMNS * (number_width + 1);
@@ -840,12 +716,8 @@ fn render_table(
 }
 
 fn number_column_width(total: Count) -> usize {
-    let max_count = [total.files, total.blank, total.comment, total.code]
-        .into_iter()
-        .max()
-        .unwrap_or(0);
-    DEFAULT_NUMBER_COLUMN_WIDTH
-        + digit_count(max_count).saturating_sub(DEFAULT_NUMBER_COLUMN_DIGITS)
+    let max_count = [total.files, total.blank, total.comment, total.code].into_iter().max().unwrap_or(0);
+    DEFAULT_NUMBER_COLUMN_WIDTH + digit_count(max_count).saturating_sub(DEFAULT_NUMBER_COLUMN_DIGITS)
 }
 
 fn digit_count(value: u64) -> usize {
@@ -880,11 +752,7 @@ fn format_f64(value: f64, precision: usize, options: RenderOptions) -> String {
         return format_integer_with_commas(value);
     };
 
-    format!(
-        "{}.{}",
-        format_integer_with_commas(integer.to_string()),
-        fraction
-    )
+    format!("{}.{}", format_integer_with_commas(integer.to_string()), fraction)
 }
 
 fn format_integer_with_commas(value: String) -> String {
@@ -892,10 +760,7 @@ fn format_integer_with_commas(value: String) -> String {
     let first_group_len = value.len() % 3;
 
     for (index, ch) in value.chars().enumerate() {
-        if index > 0
-            && (index == first_group_len
-                || (index > first_group_len && (index - first_group_len).is_multiple_of(3)))
-        {
+        if index > 0 && (index == first_group_len || (index > first_group_len && (index - first_group_len).is_multiple_of(3))) {
             formatted.push(',');
         }
         formatted.push(ch);
@@ -954,20 +819,12 @@ fn count_bytes(bytes: &[u8], syntax: Option<&languages::CommentSyntax>) -> Count
             continue;
         }
 
-        if syntax
-            .line_markers
-            .iter()
-            .any(|marker| trimmed.starts_with(marker.as_bytes()))
-        {
+        if syntax.line_markers.iter().any(|marker| trimmed.starts_with(marker.as_bytes())) {
             count.comment += 1;
             continue;
         }
 
-        if let Some(block) = syntax
-            .block_markers
-            .iter()
-            .find(|block| trimmed.starts_with(block.start.as_bytes()))
-        {
+        if let Some(block) = syntax.block_markers.iter().find(|block| trimmed.starts_with(block.start.as_bytes())) {
             count.comment += 1;
             if !contains_bytes(trimmed, block.end.as_bytes()) {
                 block_comment = Some(block);
@@ -1017,15 +874,7 @@ mod tests {
         let report = count_paths(std::slice::from_ref(&root));
         let text = report.by_language.get("Text").copied().unwrap_or_default();
 
-        assert_eq!(
-            text,
-            Count {
-                files: 2,
-                blank: 2,
-                comment: 0,
-                code: 3
-            }
-        );
+        assert_eq!(text, Count { files: 2, blank: 2, comment: 0, code: 3 });
         assert_eq!(report.stats.text_files, 2);
         assert_eq!(report.stats.ignored_files, 2);
         fs::remove_dir_all(root).unwrap();
@@ -1041,15 +890,7 @@ mod tests {
         let report = count_paths(std::slice::from_ref(&root));
         let text = report.by_language.get("Text").copied().unwrap_or_default();
 
-        assert_eq!(
-            text,
-            Count {
-                files: 1,
-                blank: 0,
-                comment: 0,
-                code: 1
-            }
-        );
+        assert_eq!(text, Count { files: 1, blank: 0, comment: 0, code: 1 });
         assert_eq!(report.stats.text_files, 1);
         fs::remove_dir_all(root).unwrap();
     }
@@ -1059,10 +900,7 @@ mod tests {
         assert_eq!(detect_language(Path::new("Makefile")), Some("make"));
         assert_eq!(detect_language(Path::new("main.rs.in")), Some("Rust"));
         assert_eq!(detect_language(Path::new("trace.d")), Some("D"));
-        assert_eq!(
-            detect_language(Path::new("Dockerfile.test")),
-            Some("Dockerfile")
-        );
+        assert_eq!(detect_language(Path::new("Dockerfile.test")), Some("Dockerfile"));
         assert_eq!(detect_language(Path::new("unknown.not-code")), None);
     }
 
@@ -1073,68 +911,31 @@ mod tests {
             languages::comment_syntax_for_language("Rust"),
         );
 
-        assert_eq!(
-            count,
-            Count {
-                files: 0,
-                blank: 1,
-                comment: 4,
-                code: 3
-            }
-        );
+        assert_eq!(count, Count { files: 0, blank: 1, comment: 4, code: 3 });
     }
 
     #[test]
     fn formats_integer_groups_with_commas() {
         assert_eq!(format_u64(82, RenderOptions { commas: true }), "82");
-        assert_eq!(
-            format_u64(19_008_687, RenderOptions { commas: true }),
-            "19,008,687"
-        );
-        assert_eq!(
-            format_u64(19_008_687, RenderOptions { commas: false }),
-            "19008687"
-        );
+        assert_eq!(format_u64(19_008_687, RenderOptions { commas: true }), "19,008,687");
+        assert_eq!(format_u64(19_008_687, RenderOptions { commas: false }), "19008687");
     }
 
     #[test]
     fn expands_table_width_starting_at_nine_digits() {
-        let eight_digits = Count {
-            files: 1,
-            blank: 1,
-            comment: 1,
-            code: 99_999_999,
-        };
-        let nine_digits = Count {
-            files: 1,
-            blank: 1,
-            comment: 1,
-            code: 100_000_000,
-        };
+        let eight_digits = Count { files: 1, blank: 1, comment: 1, code: 99_999_999 };
+        let nine_digits = Count { files: 1, blank: 1, comment: 1, code: 100_000_000 };
 
-        let eight_digit_lines = render_table(
-            [("Rust", eight_digits)],
-            eight_digits,
-            RenderOptions { commas: true },
-        );
-        let nine_digit_lines = render_table(
-            [("Rust", nine_digits)],
-            nine_digits,
-            RenderOptions { commas: true },
-        );
+        let eight_digit_lines = render_table([("Rust", eight_digits)], eight_digits, RenderOptions { commas: true });
+        let nine_digit_lines = render_table([("Rust", nine_digits)], nine_digits, RenderOptions { commas: true });
 
         assert_eq!(eight_digit_lines[0].len(), 88);
         assert_eq!(nine_digit_lines[0].len(), 92);
-        assert!(nine_digit_lines
-            .iter()
-            .any(|line| line.contains("100,000,000")));
+        assert!(nine_digit_lines.iter().any(|line| line.contains("100,000,000")));
     }
 
     fn unique_temp_dir() -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         std::env::temp_dir().join(format!("bp-cloc-test-{nanos}"))
     }
 }

@@ -1,8 +1,6 @@
 use std::{env, fs};
 
-use crate::doctor::{
-    command_error_detail, finding, DoctorCheck, DoctorContext, Finding, Fix, Severity,
-};
+use crate::doctor::{command_error_detail, finding, DoctorCheck, DoctorContext, Finding, Fix, Severity};
 
 const LINKS_MARKER: &str = "bp doctor: hyperlinks";
 
@@ -28,10 +26,7 @@ impl DoctorCheck for LinksCheck {
                 "links.no-tmux",
                 Severity::Ok,
                 "Not running inside tmux.",
-                vec![
-                    "Terminal hyperlink handling is delegated directly to the terminal emulator."
-                        .to_string(),
-                ],
+                vec!["Terminal hyperlink handling is delegated directly to the terminal emulator.".to_string()],
                 None,
             ));
         }
@@ -41,9 +36,7 @@ impl DoctorCheck for LinksCheck {
 }
 
 fn terminal_finding() -> Finding {
-    let terminal = if env::var_os("ALACRITTY_SOCKET").is_some()
-        || env::var("__CFBundleIdentifier").is_ok_and(|value| value == "org.alacritty")
-    {
+    let terminal = if env::var_os("ALACRITTY_SOCKET").is_some() || env::var("__CFBundleIdentifier").is_ok_and(|value| value == "org.alacritty") {
         "Alacritty".to_string()
     } else if let Ok(program) = env::var("TERM_PROGRAM") {
         program
@@ -55,10 +48,7 @@ fn terminal_finding() -> Finding {
         "links.terminal",
         Severity::Info,
         format!("Detected terminal: {terminal}."),
-        vec![
-            "OSC 8 links are emitted by bp as standard terminal hyperlink escape sequences."
-                .to_string(),
-        ],
+        vec!["OSC 8 links are emitted by bp as standard terminal hyperlink escape sequences.".to_string()],
         None,
     )
 }
@@ -69,11 +59,7 @@ fn tmux_findings(ctx: &DoctorContext) -> Vec<Finding> {
 
     match crate::utils::tmux::version() {
         Ok(version) => {
-            let severity = if version.supports_hyperlinks() {
-                Severity::Ok
-            } else {
-                Severity::Error
-            };
+            let severity = if version.supports_hyperlinks() { Severity::Ok } else { Severity::Error };
             findings.push(finding(
                 "links.tmux-version",
                 severity,
@@ -81,30 +67,21 @@ fn tmux_findings(ctx: &DoctorContext) -> Vec<Finding> {
                 if matches!(severity, Severity::Ok) {
                     vec!["tmux 3.4 or newer supports OSC 8 hyperlinks.".to_string()]
                 } else {
-                    vec![
-                        "tmux must be 3.4 or newer for native OSC 8 hyperlink support.".to_string(),
-                    ]
+                    vec!["tmux must be 3.4 or newer for native OSC 8 hyperlink support.".to_string()]
                 },
                 if matches!(severity, Severity::Ok) {
                     None
                 } else {
                     Some(Fix::Manual {
                         description: "Upgrade tmux.".to_string(),
-                        instructions: vec![
-                            "Install tmux 3.4 or newer, then start a fresh tmux server."
-                                .to_string(),
-                        ],
+                        instructions: vec!["Install tmux 3.4 or newer, then start a fresh tmux server.".to_string()],
                     })
                 },
             ));
         }
-        Err(error) => findings.push(finding(
-            "links.tmux-version",
-            Severity::Error,
-            "Could not inspect tmux version.",
-            command_error_detail(error),
-            None,
-        )),
+        Err(error) => {
+            findings.push(finding("links.tmux-version", Severity::Error, "Could not inspect tmux version.", command_error_detail(error), None))
+        }
     }
 
     let client_features = crate::utils::tmux::client_features().unwrap_or_default();
@@ -131,13 +108,7 @@ fn tmux_findings(ctx: &DoctorContext) -> Vec<Finding> {
 
     let terminal_features = crate::utils::tmux::terminal_features().unwrap_or_default();
     if terminal_features.has("hyperlinks") {
-        findings.push(finding(
-            "links.tmux-terminal-features",
-            Severity::Ok,
-            "tmux terminal-features includes hyperlinks.",
-            vec![],
-            None,
-        ));
+        findings.push(finding("links.tmux-terminal-features", Severity::Ok, "tmux terminal-features includes hyperlinks.", vec![], None));
     } else {
         findings.push(finding(
             "links.tmux-terminal-features",
@@ -152,13 +123,7 @@ fn tmux_findings(ctx: &DoctorContext) -> Vec<Finding> {
         Ok(true) => {
             let binding = crate::utils::tmux::mouse_down1_pane_binding().unwrap_or_default();
             if binding.opens_mouse_hyperlink() {
-                findings.push(finding(
-                    "links.tmux-mouse",
-                    Severity::Ok,
-                    "tmux mouse binding opens hyperlinks.",
-                    vec![],
-                    None,
-                ));
+                findings.push(finding("links.tmux-mouse", Severity::Ok, "tmux mouse binding opens hyperlinks.", vec![], None));
             } else {
                 findings.push(finding(
                     "links.tmux-mouse",
@@ -176,13 +141,9 @@ fn tmux_findings(ctx: &DoctorContext) -> Vec<Finding> {
             vec!["The terminal emulator can receive normal link clicks directly.".to_string()],
             None,
         )),
-        Err(error) => findings.push(finding(
-            "links.tmux-mouse",
-            Severity::Warning,
-            "Could not inspect tmux mouse mode.",
-            command_error_detail(error),
-            None,
-        )),
+        Err(error) => {
+            findings.push(finding("links.tmux-mouse", Severity::Warning, "Could not inspect tmux mouse mode.", command_error_detail(error), None))
+        }
     }
 
     findings
@@ -197,11 +158,7 @@ fn tmux_config_finding(ctx: &DoctorContext) -> Finding {
                 "links.tmux-config",
                 Severity::Warning,
                 format!("Could not read {}.", path.display()),
-                vec![
-                    error.to_string(),
-                    "Live tmux checks may still pass, but new tmux servers may not be configured."
-                        .to_string(),
-                ],
+                vec![error.to_string(), "Live tmux checks may still pass, but new tmux servers may not be configured.".to_string()],
                 Some(tmux_config_fix(ctx)),
             )
         }
@@ -214,9 +171,7 @@ fn tmux_config_finding(ctx: &DoctorContext) -> Finding {
             "links.tmux-config",
             Severity::Ok,
             "~/.tmux.conf persists hyperlink support and click handling.",
-            vec![
-                "This checks active, non-commented config lines; live tmux state is reported separately.".to_string(),
-            ],
+            vec!["This checks active, non-commented config lines; live tmux state is reported separately.".to_string()],
             None,
         )
     } else {
@@ -227,17 +182,9 @@ fn tmux_config_finding(ctx: &DoctorContext) -> Finding {
         if !has_binding {
             details.push("Missing active MouseDown1Pane #{mouse_hyperlink} binding.".to_string());
         }
-        details.push(
-            "Live tmux checks can still pass until tmux is re-sourced or restarted.".to_string(),
-        );
+        details.push("Live tmux checks can still pass until tmux is re-sourced or restarted.".to_string());
 
-        finding(
-            "links.tmux-config",
-            Severity::Warning,
-            "~/.tmux.conf does not persist the full hyperlink fix.",
-            details,
-            Some(tmux_config_fix(ctx)),
-        )
+        finding("links.tmux-config", Severity::Warning, "~/.tmux.conf does not persist the full hyperlink fix.", details, Some(tmux_config_fix(ctx)))
     }
 }
 

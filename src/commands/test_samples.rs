@@ -22,21 +22,12 @@ pub fn command() -> Command {
             This will compile solution.cpp, feed solution_input.txt to stdin, and compare \
             stdout against solution_output.txt line by line.",
         )
-        .arg(
-            Arg::new("file")
-                .help("The C++ file to test (with or without .cpp extension)")
-                .required(true)
-                .index(1),
-        )
+        .arg(Arg::new("file").help("The C++ file to test (with or without .cpp extension)").required(true).index(1))
 }
 
 pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let file = args.get_one::<String>("file").unwrap();
-    let file = if file.ends_with(".cpp") {
-        file.clone()
-    } else {
-        format!("{file}.cpp")
-    };
+    let file = if file.ends_with(".cpp") { file.clone() } else { format!("{file}.cpp") };
 
     if !Path::new(&file).exists() {
         return Err(CliError::new(format!("{file} not found."), 1));
@@ -46,32 +37,19 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let input_path = format!("{stem}_input.txt");
     let output_path = format!("{stem}_output.txt");
 
-    let test_input = fs::read_to_string(&input_path)
-        .map_err(|_| CliError::new(format!("{input_path} not found."), 1))?;
-    let expected_output = fs::read_to_string(&output_path)
-        .map_err(|_| CliError::new(format!("{output_path} not found."), 1))?;
+    let test_input = fs::read_to_string(&input_path).map_err(|_| CliError::new(format!("{input_path} not found."), 1))?;
+    let expected_output = fs::read_to_string(&output_path).map_err(|_| CliError::new(format!("{output_path} not found."), 1))?;
 
     let compile_command = format!("g++ -g -std=c++17 -Wall -DDBG_MODE {file}");
-    let status = ProcessCommand::new("sh")
-        .arg("-c")
-        .arg(&compile_command)
-        .status()?;
+    let status = ProcessCommand::new("sh").arg("-c").arg(&compile_command).status()?;
 
     if !status.success() {
         return Err(CliError::from("compilation failed"));
     }
 
-    let mut child = ProcessCommand::new("./a.out")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()?;
+    let mut child = ProcessCommand::new("./a.out").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn()?;
 
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(test_input.as_bytes())?;
+    child.stdin.take().unwrap().write_all(test_input.as_bytes())?;
 
     let output = child.wait_with_output()?;
     let actual_output = String::from_utf8_lossy(&output.stdout);
@@ -104,26 +82,15 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     }
 
     for (line_num, actual, expected) in &mismatches {
-        gctx.shell().note(color_print::cformat!(
-            "Line {}: <red>{}</> != <green>{}</>",
-            line_num,
-            actual,
-            expected
-        ));
+        gctx.shell().note(color_print::cformat!("Line {}: <red>{}</> != <green>{}</>", line_num, actual, expected));
     }
 
     if good == total && total > 0 {
-        gctx.shell()
-            .note(color_print::cformat!("<green>All tests passed!</>"));
+        gctx.shell().note(color_print::cformat!("<green>All tests passed!</>"));
     } else if good >= 1 {
-        gctx.shell().note(color_print::cformat!(
-            "<yellow>{} / {} tests passed.</>",
-            good,
-            total
-        ));
+        gctx.shell().note(color_print::cformat!("<yellow>{} / {} tests passed.</>", good, total));
     } else {
-        gctx.shell()
-            .note(color_print::cformat!("<red>No tests passed.</>"));
+        gctx.shell().note(color_print::cformat!("<red>No tests passed.</>"));
     }
 
     Ok(())

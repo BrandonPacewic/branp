@@ -62,23 +62,13 @@ fn probe_one_shot_timings(inputs: &[&ClocInput]) {
 }
 
 fn filtered_probe_inputs(inputs: &[ClocInput]) -> Vec<&ClocInput> {
-    let filters = std::env::args()
-        .skip(1)
-        .filter(|arg| !arg.starts_with('-'))
-        .collect::<Vec<_>>();
+    let filters = std::env::args().skip(1).filter(|arg| !arg.starts_with('-')).collect::<Vec<_>>();
 
     if filters.is_empty() {
         return inputs.iter().collect();
     }
 
-    inputs
-        .iter()
-        .filter(|input| {
-            filters
-                .iter()
-                .any(|filter| filter.contains(&input.name) || input.name.contains(filter))
-        })
-        .collect()
+    inputs.iter().filter(|input| filters.iter().any(|filter| filter.contains(&input.name) || input.name.contains(filter))).collect()
 }
 
 fn time_count(input: &ClocInput) -> (Duration, BenchCountReport) {

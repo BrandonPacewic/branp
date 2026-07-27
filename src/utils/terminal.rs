@@ -19,10 +19,7 @@ impl DynamicLines {
     pub fn print(lines: &[String]) -> io::Result<Self> {
         let enabled = supports_dynamic_lines();
         write_lines(lines)?;
-        Ok(Self {
-            line_count: lines.len(),
-            enabled,
-        })
+        Ok(Self { line_count: lines.len(), enabled })
     }
 
     pub fn replace(&mut self, lines: &[String]) -> io::Result<()> {
@@ -52,12 +49,7 @@ pub struct DynamicRenderLoop {
 
 impl DynamicRenderLoop {
     pub fn start(lines: &[String]) -> io::Result<Self> {
-        Ok(Self {
-            frame: DynamicLines::print(lines)?,
-            spinner: vec!['-', '\\', '|', '/'],
-            tick: 0,
-            tick_interval: Duration::from_millis(120),
-        })
+        Ok(Self { frame: DynamicLines::print(lines)?, spinner: vec!['-', '\\', '|', '/'], tick: 0, tick_interval: Duration::from_millis(120) })
     }
 
     pub fn tick_interval(&self) -> Duration {

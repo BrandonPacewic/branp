@@ -21,12 +21,7 @@ pub fn command() -> Command {
             Command::new("list")
                 .alias("ls")
                 .about("List Git worktrees")
-                .arg(
-                    Arg::new("no-pr")
-                        .long("no-pr")
-                        .help("Skip GitHub pull request lookup")
-                        .action(ArgAction::SetTrue),
-                ),
+                .arg(Arg::new("no-pr").long("no-pr").help("Skip GitHub pull request lookup").action(ArgAction::SetTrue)),
         )
         .subcommand(
             Command::new("path")
@@ -38,74 +33,26 @@ pub fn command() -> Command {
                 .about("Create a sibling worktree")
                 .arg(Arg::new("name").required(true).value_name("NAME"))
                 .arg(Arg::new("branch").value_name("BRANCH"))
-                .arg(
-                    Arg::new("no-fetch")
-                        .long("no-fetch")
-                        .help("Do not fetch origin before creating the worktree")
-                        .action(ArgAction::SetTrue),
-                )
-                .arg(
-                    Arg::new("no-submodules")
-                        .long("no-submodules")
-                        .help("Skip submodule initialization")
-                        .action(ArgAction::SetTrue),
-                )
-                .arg(
-                    Arg::new("no-tmux")
-                        .long("no-tmux")
-                        .help("Do not start a tmux session")
-                        .action(ArgAction::SetTrue),
-                ),
+                .arg(Arg::new("no-fetch").long("no-fetch").help("Do not fetch origin before creating the worktree").action(ArgAction::SetTrue))
+                .arg(Arg::new("no-submodules").long("no-submodules").help("Skip submodule initialization").action(ArgAction::SetTrue))
+                .arg(Arg::new("no-tmux").long("no-tmux").help("Do not start a tmux session").action(ArgAction::SetTrue)),
         )
         .subcommand(
             Command::new("remove")
                 .alias("rm")
                 .about("Remove a sibling worktree and its local branch")
                 .arg(Arg::new("name").required(true).value_name("NAME"))
-                .arg(
-                    Arg::new("force")
-                        .short('f')
-                        .long("force")
-                        .help("Force worktree removal and branch deletion")
-                        .action(ArgAction::SetTrue),
-                )
-                .arg(
-                    Arg::new("keep-branch")
-                        .long("keep-branch")
-                        .help("Do not delete the local branch")
-                        .action(ArgAction::SetTrue),
-                )
-                .arg(
-                    Arg::new("no-tmux")
-                        .long("no-tmux")
-                        .help("Do not kill the matching tmux session")
-                        .action(ArgAction::SetTrue),
-                ),
+                .arg(Arg::new("force").short('f').long("force").help("Force worktree removal and branch deletion").action(ArgAction::SetTrue))
+                .arg(Arg::new("keep-branch").long("keep-branch").help("Do not delete the local branch").action(ArgAction::SetTrue))
+                .arg(Arg::new("no-tmux").long("no-tmux").help("Do not kill the matching tmux session").action(ArgAction::SetTrue)),
         )
         .subcommand(Command::new("prune").about("Run git worktree prune"))
         .subcommand(
             Command::new("gone")
                 .about("Remove sibling worktrees whose origin branch no longer exists")
-                .arg(
-                    Arg::new("dry-run")
-                        .short('n')
-                        .long("dry-run")
-                        .help("Show what would be removed")
-                        .action(ArgAction::SetTrue),
-                )
-                .arg(
-                    Arg::new("force")
-                        .short('f')
-                        .long("force")
-                        .help("Force worktree removal and branch deletion")
-                        .action(ArgAction::SetTrue),
-                )
-                .arg(
-                    Arg::new("no-tmux")
-                        .long("no-tmux")
-                        .help("Do not kill matching tmux sessions")
-                        .action(ArgAction::SetTrue),
-                ),
+                .arg(Arg::new("dry-run").short('n').long("dry-run").help("Show what would be removed").action(ArgAction::SetTrue))
+                .arg(Arg::new("force").short('f').long("force").help("Force worktree removal and branch deletion").action(ArgAction::SetTrue))
+                .arg(Arg::new("no-tmux").long("no-tmux").help("Do not kill matching tmux sessions").action(ArgAction::SetTrue)),
         )
 }
 
@@ -116,46 +63,23 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
         Some(("list", sub)) => list(gctx, &repo, !sub.get_flag("no-pr")),
         Some(("path", sub)) => {
             let name = required(sub, "name")?;
-            let path = if name == repo.default_branch {
-                repo.base.clone()
-            } else {
-                repo.target_dir(name)
-            };
+            let path = if name == repo.default_branch { repo.base.clone() } else { repo.target_dir(name) };
             gctx.shell().note(path.display());
             Ok(())
         }
         Some(("new", sub)) => {
             let name = required(sub, "name")?;
             let branch = sub.get_one::<String>("branch").map_or(name, String::as_str);
-            create(
-                gctx,
-                &repo,
-                name,
-                branch,
-                !sub.get_flag("no-fetch"),
-                !sub.get_flag("no-submodules"),
-                !sub.get_flag("no-tmux"),
-            )
+            create(gctx, &repo, name, branch, !sub.get_flag("no-fetch"), !sub.get_flag("no-submodules"), !sub.get_flag("no-tmux"))
         }
-        Some(("remove", sub)) => remove(
-            gctx,
-            &repo,
-            required(sub, "name")?,
-            sub.get_flag("force"),
-            !sub.get_flag("keep-branch"),
-            !sub.get_flag("no-tmux"),
-        ),
+        Some(("remove", sub)) => {
+            remove(gctx, &repo, required(sub, "name")?, sub.get_flag("force"), !sub.get_flag("keep-branch"), !sub.get_flag("no-tmux"))
+        }
         Some(("prune", _)) => {
             git::run(&repo.base, &["worktree", "prune"])?;
             Ok(())
         }
-        Some(("gone", sub)) => remove_gone(
-            gctx,
-            &repo,
-            sub.get_flag("dry-run"),
-            sub.get_flag("force"),
-            !sub.get_flag("no-tmux"),
-        ),
+        Some(("gone", sub)) => remove_gone(gctx, &repo, sub.get_flag("dry-run"), sub.get_flag("force"), !sub.get_flag("no-tmux")),
         _ => Err(CliError::from("no `worktree` subcommand provided")),
     }
 }
@@ -170,16 +94,8 @@ fn list(gctx: &mut GlobalContext, repo: &Repo, pr_lookup: bool) -> CliResult {
     let verbose = gctx.is_verbose();
     if !crate::utils::terminal::supports_dynamic_lines() {
         let rows = resolve_worktree_rows(repo, &worktrees, &path_root, verbose)?;
-        let pr_numbers = if pr_lookup {
-            crate::utils::gh::open_pull_requests(&repo.base).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        let pr_render = if pr_lookup {
-            PrRender::Resolved(&pr_numbers)
-        } else {
-            PrRender::Disabled
-        };
+        let pr_numbers = if pr_lookup { crate::utils::gh::open_pull_requests(&repo.base).unwrap_or_default() } else { Vec::new() };
+        let pr_render = if pr_lookup { PrRender::Resolved(&pr_numbers) } else { PrRender::Disabled };
 
         for line in render_worktree_rows(&rows, pr_render, None) {
             gctx.shell().note(line);
@@ -190,40 +106,21 @@ fn list(gctx: &mut GlobalContext, repo: &Repo, pr_lookup: bool) -> CliResult {
     render_worktree_rows_dynamic(repo, worktrees, &path_root, verbose, pr_lookup)
 }
 
-fn resolve_worktree_rows(
-    repo: &Repo,
-    worktrees: &[Worktree],
-    path_root: &Path,
-    verbose: bool,
-) -> Result<Vec<WorktreeRow>, CliError> {
+fn resolve_worktree_rows(repo: &Repo, worktrees: &[Worktree], path_root: &Path, verbose: bool) -> Result<Vec<WorktreeRow>, CliError> {
     let remote_branches = git::remote_branches(&repo.base, "origin").unwrap_or_default();
-    let tmux_sessions: HashSet<_> = crate::utils::tmux::sessions()
-        .unwrap_or_default()
-        .into_iter()
-        .collect();
-    let mut rows: Vec<_> = worktrees
-        .iter()
-        .map(|worktree| WorktreeRow::from_worktree(repo, worktree, path_root, verbose))
-        .collect();
+    let tmux_sessions: HashSet<_> = crate::utils::tmux::sessions().unwrap_or_default().into_iter().collect();
+    let mut rows: Vec<_> = worktrees.iter().map(|worktree| WorktreeRow::from_worktree(repo, worktree, path_root, verbose)).collect();
     let handles: Vec<_> = worktrees
         .iter()
         .enumerate()
         .map(|(index, worktree)| {
             let path = worktree.path.clone();
-            thread::spawn(move || {
-                (
-                    index,
-                    status_summary(&path).unwrap_or_default(),
-                    has_submodules(&path),
-                )
-            })
+            thread::spawn(move || (index, status_summary(&path).unwrap_or_default(), has_submodules(&path)))
         })
         .collect();
 
     for handle in handles {
-        let (index, status, has_submodules) = handle
-            .join()
-            .map_err(|_| CliError::from("worktree status lookup panicked"))?;
+        let (index, status, has_submodules) = handle.join().map_err(|_| CliError::from("worktree status lookup panicked"))?;
         if let Some(row) = rows.get_mut(index) {
             row.apply_status(status);
             row.has_submodules = Some(has_submodules);
@@ -238,17 +135,8 @@ fn resolve_worktree_rows(
     Ok(rows)
 }
 
-fn render_worktree_rows_dynamic(
-    repo: &Repo,
-    worktrees: Vec<Worktree>,
-    path_root: &Path,
-    verbose: bool,
-    pr_lookup: bool,
-) -> CliResult {
-    let rows: Vec<_> = worktrees
-        .iter()
-        .map(|worktree| WorktreeRow::from_worktree(repo, worktree, path_root, verbose))
-        .collect();
+fn render_worktree_rows_dynamic(repo: &Repo, worktrees: Vec<Worktree>, path_root: &Path, verbose: bool, pr_lookup: bool) -> CliResult {
+    let rows: Vec<_> = worktrees.iter().map(|worktree| WorktreeRow::from_worktree(repo, worktree, path_root, verbose)).collect();
     let (tx, rx) = mpsc::channel();
     let mut pending = 0;
 
@@ -256,11 +144,8 @@ fn render_worktree_rows_dynamic(
         let tx = tx.clone();
         let path = worktree.path.clone();
         thread::spawn(move || {
-            let _ = tx.send(WorktreeUpdate::Status {
-                index,
-                status: status_summary(&path).unwrap_or_default(),
-                has_submodules: has_submodules(&path),
-            });
+            let _ =
+                tx.send(WorktreeUpdate::Status { index, status: status_summary(&path).unwrap_or_default(), has_submodules: has_submodules(&path) });
         });
         pending += 1;
     }
@@ -269,9 +154,7 @@ fn render_worktree_rows_dynamic(
         let tx = tx.clone();
         let repo_base = repo.base.clone();
         thread::spawn(move || {
-            let _ = tx.send(WorktreeUpdate::RemoteBranches(
-                git::remote_branches(&repo_base, "origin").unwrap_or_default(),
-            ));
+            let _ = tx.send(WorktreeUpdate::RemoteBranches(git::remote_branches(&repo_base, "origin").unwrap_or_default()));
         });
         pending += 1;
     }
@@ -279,10 +162,7 @@ fn render_worktree_rows_dynamic(
     {
         let tx = tx.clone();
         thread::spawn(move || {
-            let sessions = crate::utils::tmux::sessions()
-                .unwrap_or_default()
-                .into_iter()
-                .collect();
+            let sessions = crate::utils::tmux::sessions().unwrap_or_default().into_iter().collect();
             let _ = tx.send(WorktreeUpdate::TmuxSessions(sessions));
         });
         pending += 1;
@@ -292,55 +172,29 @@ fn render_worktree_rows_dynamic(
         let tx = tx.clone();
         let repo_base = repo.base.clone();
         thread::spawn(move || {
-            let _ = tx.send(WorktreeUpdate::PullRequests(
-                crate::utils::gh::open_pull_requests(&repo_base).unwrap_or_default(),
-            ));
+            let _ = tx.send(WorktreeUpdate::PullRequests(crate::utils::gh::open_pull_requests(&repo_base).unwrap_or_default()));
         });
         pending += 1;
     }
     drop(tx);
 
-    let mut state = WorktreeRenderState {
-        rows,
-        default_branch: repo.default_branch.clone(),
-        pr_lookup,
-        pr_numbers: None,
-    };
+    let mut state = WorktreeRenderState { rows, default_branch: repo.default_branch.clone(), pr_lookup, pr_numbers: None };
     crate::utils::terminal::render_dynamic_updates(
         &mut state,
         pending,
         rx,
         |state, spinner| {
-            render_worktree_rows(
-                &state.rows,
-                pr_render_state(
-                    state.pr_lookup,
-                    state.pr_numbers.as_deref(),
-                    spinner.unwrap_or('-'),
-                ),
-                spinner,
-            )
+            render_worktree_rows(&state.rows, pr_render_state(state.pr_lookup, state.pr_numbers.as_deref(), spinner.unwrap_or('-')), spinner)
         },
         WorktreeRenderState::apply,
     )?;
     Ok(())
 }
 
-fn create(
-    gctx: &mut GlobalContext,
-    repo: &Repo,
-    name: &str,
-    branch: &str,
-    fetch: bool,
-    submodules: bool,
-    tmux: bool,
-) -> CliResult {
+fn create(gctx: &mut GlobalContext, repo: &Repo, name: &str, branch: &str, fetch: bool, submodules: bool, tmux: bool) -> CliResult {
     let target = repo.target_dir(name);
     if target.exists() {
-        return Err(CliError::from(format!(
-            "worktree already exists: {}",
-            target.display()
-        )));
+        return Err(CliError::from(format!("worktree already exists: {}", target.display())));
     }
 
     if fetch {
@@ -348,28 +202,13 @@ fn create(
     }
 
     if git::local_branch_exists(&repo.base, branch)? {
-        return Err(CliError::from(format!(
-            "local branch already exists: {branch}"
-        )));
+        return Err(CliError::from(format!("local branch already exists: {branch}")));
     }
 
     if git::remote_branch_exists(&repo.base, "origin", branch)? {
-        git::run(
-            &repo.base,
-            &[
-                "worktree",
-                "add",
-                path_arg(&target).as_str(),
-                "-b",
-                branch,
-                &format!("origin/{branch}"),
-            ],
-        )?;
+        git::run(&repo.base, &["worktree", "add", path_arg(&target).as_str(), "-b", branch, &format!("origin/{branch}")])?;
     } else {
-        git::run(
-            &repo.base,
-            &["worktree", "add", path_arg(&target).as_str(), "-b", branch],
-        )?;
+        git::run(&repo.base, &["worktree", "add", path_arg(&target).as_str(), "-b", branch])?;
     }
 
     if submodules {
@@ -384,20 +223,10 @@ fn create(
     Ok(())
 }
 
-fn remove(
-    gctx: &mut GlobalContext,
-    repo: &Repo,
-    name: &str,
-    force: bool,
-    delete_branch: bool,
-    tmux: bool,
-) -> CliResult {
+fn remove(gctx: &mut GlobalContext, repo: &Repo, name: &str, force: bool, delete_branch: bool, tmux: bool) -> CliResult {
     let target = repo.target_dir(name);
     if !target.is_dir() {
-        return Err(CliError::from(format!(
-            "worktree not found: {}",
-            target.display()
-        )));
+        return Err(CliError::from(format!("worktree not found: {}", target.display())));
     }
 
     let branch = git::current_branch(&target)?;
@@ -426,13 +255,7 @@ fn remove(
     Ok(())
 }
 
-fn remove_gone(
-    gctx: &mut GlobalContext,
-    repo: &Repo,
-    dry_run: bool,
-    force: bool,
-    tmux: bool,
-) -> CliResult {
+fn remove_gone(gctx: &mut GlobalContext, repo: &Repo, dry_run: bool, force: bool, tmux: bool) -> CliResult {
     git::run(&repo.base, &["fetch", "--prune"])?;
     let worktrees = worktrees(&repo.base)?;
 
@@ -444,17 +267,12 @@ fn remove_gone(
         let Some(branch) = worktree.branch else {
             continue;
         };
-        if branch == repo.default_branch
-            || git::remote_branch_exists(&repo.base, "origin", &branch)?
-        {
+        if branch == repo.default_branch || git::remote_branch_exists(&repo.base, "origin", &branch)? {
             continue;
         }
 
         let Some(name) = repo.name_from_path(&worktree.path) else {
-            gctx.shell().warn(format!(
-                "skipping non-sibling worktree for branch `{branch}`: {}",
-                worktree.path.display()
-            ));
+            gctx.shell().warn(format!("skipping non-sibling worktree for branch `{branch}`: {}", worktree.path.display()));
             continue;
         };
 
@@ -476,23 +294,13 @@ struct Repo {
 impl Repo {
     fn discover(cwd: &Path) -> Result<Self, CliError> {
         let root = PathBuf::from(git::output(cwd, &["rev-parse", "--show-toplevel"])?.trim());
-        let base = worktrees(&root)?
-            .into_iter()
-            .next()
-            .map(|w| w.path)
-            .ok_or("could not determine base worktree")?;
-        let default_branch = git::output(
-            &base,
-            &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-        )
-        .ok()
-        .and_then(|s| s.trim().strip_prefix("origin/").map(str::to_string))
-        .unwrap_or_else(|| "main".to_string());
+        let base = worktrees(&root)?.into_iter().next().map(|w| w.path).ok_or("could not determine base worktree")?;
+        let default_branch = git::output(&base, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+            .ok()
+            .and_then(|s| s.trim().strip_prefix("origin/").map(str::to_string))
+            .unwrap_or_else(|| "main".to_string());
 
-        Ok(Self {
-            base,
-            default_branch,
-        })
+        Ok(Self { base, default_branch })
     }
 
     fn target_dir(&self, name: &str) -> PathBuf {
@@ -509,17 +317,12 @@ impl Repo {
 }
 
 fn session_name_for(base: &Path, name: &str) -> String {
-    let repo_name = base
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("worktree");
+    let repo_name = base.file_name().and_then(|name| name.to_str()).unwrap_or("worktree");
     format!("{repo_name}-{name}")
 }
 
 fn name_from_worktree_path(base: &Path, path: &Path) -> Option<String> {
-    path.to_str()?
-        .strip_prefix(&format!("{}-", base.display()))
-        .map(str::to_string)
+    path.to_str()?.strip_prefix(&format!("{}-", base.display())).map(str::to_string)
 }
 
 struct Worktree {
@@ -538,11 +341,7 @@ fn worktrees(repo: &Path) -> Result<Vec<Worktree>, CliError> {
     for line in output.lines().chain(std::iter::once("")) {
         if line.is_empty() {
             if let Some(path) = path.take() {
-                items.push(Worktree {
-                    path,
-                    head: head.take(),
-                    branch: branch.take(),
-                });
+                items.push(Worktree { path, head: head.take(), branch: branch.take() });
             }
         } else if let Some(value) = line.strip_prefix("worktree ") {
             path = Some(PathBuf::from(value));
@@ -567,11 +366,7 @@ struct StatusSummary {
 
 impl StatusSummary {
     fn is_dirty(&self) -> bool {
-        self.staged > 0
-            || self.modified > 0
-            || self.deleted > 0
-            || self.untracked > 0
-            || self.submodule > 0
+        self.staged > 0 || self.modified > 0 || self.deleted > 0 || self.untracked > 0 || self.submodule > 0
     }
 
     fn tracked_badge(&self) -> String {
@@ -618,12 +413,7 @@ impl WorktreeRow {
         Self {
             path: display_path(&worktree.path, path_root),
             branch: branch.to_string(),
-            head: worktree
-                .head
-                .as_deref()
-                .and_then(|head| head.get(..7))
-                .unwrap_or("")
-                .to_string(),
+            head: worktree.head.as_deref().and_then(|head| head.get(..7)).unwrap_or("").to_string(),
             source_path: worktree.path.clone(),
             source_base: repo.base.clone(),
             base: worktree.path == repo.base,
@@ -643,12 +433,7 @@ impl WorktreeRow {
     fn apply_remote_branches(&mut self, remote_branches: &HashSet<String>, default_branch: &str) {
         let remote_exists = remote_branches.contains(&self.branch);
         self.remote_exists = Some(remote_exists);
-        self.remote_gone = Some(
-            !self.base
-                && self.branch != "detached"
-                && self.branch != default_branch
-                && !remote_exists,
-        );
+        self.remote_gone = Some(!self.base && self.branch != "detached" && self.branch != default_branch && !remote_exists);
     }
 
     fn apply_tmux_sessions(&mut self, tmux_sessions: &HashSet<String>) {
@@ -666,9 +451,7 @@ impl WorktreeRow {
             ("base".to_string(), BadgeColor::Green)
         } else {
             match &self.status {
-                Some(status) if status.is_dirty() => {
-                    (status.tracked_badge(), BadgeColor::YellowBold)
-                }
+                Some(status) if status.is_dirty() => (status.tracked_badge(), BadgeColor::YellowBold),
                 Some(_) => ("clean".to_string(), BadgeColor::Green),
                 None => (loading_badge("status", spinner), BadgeColor::Black),
             }
@@ -677,11 +460,7 @@ impl WorktreeRow {
         WorktreeBadges {
             state,
             state_color,
-            untracked: self
-                .status
-                .as_ref()
-                .map(|status| count_badge("untracked", status.untracked))
-                .unwrap_or_default(),
+            untracked: self.status.as_ref().map(|status| count_badge("untracked", status.untracked)).unwrap_or_default(),
             remote: match (self.remote_gone, self.remote_exists) {
                 (Some(true), _) => "prunable".to_string(),
                 (_, Some(true)) => "remote-ok".to_string(),
@@ -695,11 +474,7 @@ impl WorktreeRow {
                 None if self.verbose => loading_badge("submodules", spinner),
                 None => String::new(),
             },
-            tmux: self
-                .tmux_session
-                .as_deref()
-                .map(|session| format!("tmux:{session}"))
-                .unwrap_or_default(),
+            tmux: self.tmux_session.as_deref().map(|session| format!("tmux:{session}")).unwrap_or_default(),
         }
     }
 
@@ -734,12 +509,7 @@ impl WorktreeRow {
             } else {
                 color_badge(&badges.remote, badge_widths[2], BadgeColor::Green)
             },
-            color_badge_link(
-                &badges.pr.text,
-                badge_widths[3],
-                BadgeColor::Magenta,
-                badges.pr.url.as_deref(),
-            ),
+            color_badge_link(&badges.pr.text, badge_widths[3], BadgeColor::Magenta, badges.pr.url.as_deref()),
             color_badge(&badges.submodules, badge_widths[4], BadgeColor::Yellow),
             color_badge(&badges.tmux, badge_widths[5], BadgeColor::Cyan),
         ];
@@ -760,14 +530,7 @@ struct WorktreeBadges {
 
 impl WorktreeBadges {
     fn widths(&self) -> [usize; 6] {
-        [
-            self.state.len(),
-            self.untracked.len(),
-            self.remote.len(),
-            self.pr.text.len(),
-            self.submodules.len(),
-            self.tmux.len(),
-        ]
+        [self.state.len(), self.untracked.len(), self.remote.len(), self.pr.text.len(), self.submodules.len(), self.tmux.len()]
     }
 }
 
@@ -779,24 +542,15 @@ struct DynamicBadge {
 
 impl DynamicBadge {
     fn empty() -> Self {
-        Self {
-            text: String::new(),
-            url: None,
-        }
+        Self { text: String::new(), url: None }
     }
 
     fn text(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            url: None,
-        }
+        Self { text: text.into(), url: None }
     }
 
     fn link(text: impl Into<String>, url: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            url: Some(url.into()),
-        }
+        Self { text: text.into(), url: Some(url.into()) }
     }
 }
 
@@ -807,11 +561,7 @@ enum PrRender<'a> {
 }
 
 enum WorktreeUpdate {
-    Status {
-        index: usize,
-        status: StatusSummary,
-        has_submodules: bool,
-    },
+    Status { index: usize, status: StatusSummary, has_submodules: bool },
     RemoteBranches(HashSet<String>),
     TmuxSessions(HashSet<String>),
     PullRequests(Vec<crate::utils::gh::PullRequest>),
@@ -827,11 +577,7 @@ struct WorktreeRenderState {
 impl WorktreeRenderState {
     fn apply(&mut self, update: WorktreeUpdate) {
         match update {
-            WorktreeUpdate::Status {
-                index,
-                status,
-                has_submodules,
-            } => {
+            WorktreeUpdate::Status { index, status, has_submodules } => {
                 if let Some(row) = self.rows.get_mut(index) {
                     row.apply_status(status);
                     row.has_submodules = Some(has_submodules);
@@ -854,11 +600,7 @@ impl WorktreeRenderState {
     }
 }
 
-fn pr_render_state<'a>(
-    pr_lookup: bool,
-    prs: Option<&'a [crate::utils::gh::PullRequest]>,
-    spinner: char,
-) -> PrRender<'a> {
+fn pr_render_state<'a>(pr_lookup: bool, prs: Option<&'a [crate::utils::gh::PullRequest]>, spinner: char) -> PrRender<'a> {
     if !pr_lookup {
         PrRender::Disabled
     } else if let Some(prs) = prs {
@@ -868,16 +610,10 @@ fn pr_render_state<'a>(
     }
 }
 
-fn render_worktree_rows(
-    rows: &[WorktreeRow],
-    pr_render: PrRender<'_>,
-    spinner: Option<char>,
-) -> Vec<String> {
+fn render_worktree_rows(rows: &[WorktreeRow], pr_render: PrRender<'_>, spinner: Option<char>) -> Vec<String> {
     let pr_badges: Vec<_> = rows.iter().map(|row| row.pr_badge(&pr_render)).collect();
-    let [path_width, branch_width, head_width] = crate::utils::table::column_widths(
-        rows.iter()
-            .map(|row| [row.path.as_str(), row.branch.as_str(), row.head.as_str()]),
-    );
+    let [path_width, branch_width, head_width] =
+        crate::utils::table::column_widths(rows.iter().map(|row| [row.path.as_str(), row.branch.as_str(), row.head.as_str()]));
     let mut badge_widths = [0; 6];
 
     for (row, pr) in rows.iter().zip(&pr_badges) {
@@ -887,19 +623,7 @@ fn render_worktree_rows(
         }
     }
 
-    rows.iter()
-        .zip(pr_badges)
-        .map(|(row, pr)| {
-            row.format(
-                path_width,
-                branch_width,
-                head_width,
-                badge_widths,
-                pr,
-                spinner,
-            )
-        })
-        .collect()
+    rows.iter().zip(pr_badges).map(|(row, pr)| row.format(path_width, branch_width, head_width, badge_widths, pr, spinner)).collect()
 }
 
 impl WorktreeRow {
@@ -927,9 +651,7 @@ impl WorktreeRow {
 }
 
 fn loading_badge(label: &str, spinner: Option<char>) -> String {
-    spinner
-        .map(|spinner| format!("{label} {spinner}"))
-        .unwrap_or_default()
+    spinner.map(|spinner| format!("{label} {spinner}")).unwrap_or_default()
 }
 
 fn count_badge(label: &str, count: usize) -> String {
@@ -962,11 +684,7 @@ fn color_badge_link(value: &str, width: usize, color: BadgeColor, url: Option<&s
     }
 
     let padding = " ".repeat(width.saturating_sub(value.len()));
-    let value = if let Some(url) = url {
-        format!("{}{padding}", crate::utils::terminal::hyperlink(value, url))
-    } else {
-        format!("{value}{padding}")
-    };
+    let value = if let Some(url) = url { format!("{}{padding}", crate::utils::terminal::hyperlink(value, url)) } else { format!("{value}{padding}") };
 
     match color {
         BadgeColor::Green => color_print::cformat!("<green>{value}</>"),
@@ -998,12 +716,7 @@ fn common_parent(worktrees: &[Worktree]) -> PathBuf {
 }
 
 fn display_path(path: &Path, root: &Path) -> String {
-    path.strip_prefix(root)
-        .ok()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or(path)
-        .display()
-        .to_string()
+    path.strip_prefix(root).ok().filter(|path| !path.as_os_str().is_empty()).unwrap_or(path).display().to_string()
 }
 
 fn status_summary(repo: &Path) -> Result<StatusSummary, CliError> {
@@ -1041,10 +754,7 @@ fn confirm_lossy_remove(gctx: &mut GlobalContext, repo: &Path) -> Result<bool, C
         return Ok(false);
     }
 
-    gctx.shell().warn(format!(
-        "removing this worktree will lose unstaged changes in {}:",
-        repo.display()
-    ));
+    gctx.shell().warn(format!("removing this worktree will lose unstaged changes in {}:", repo.display()));
     for change in changes {
         gctx.shell().warn(format!("  {change}"));
     }
@@ -1108,21 +818,9 @@ fn submodule_paths(repo: &Path) -> Result<Vec<String>, CliError> {
         return Ok(Vec::new());
     }
 
-    let output = git::output(
-        repo,
-        &[
-            "config",
-            "--file",
-            ".gitmodules",
-            "--get-regexp",
-            r"^submodule\..*\.path$",
-        ],
-    )?;
+    let output = git::output(repo, &["config", "--file", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$"])?;
 
-    Ok(output
-        .lines()
-        .filter_map(|line| line.split_once(' ').map(|(_, path)| path.to_string()))
-        .collect())
+    Ok(output.lines().filter_map(|line| line.split_once(' ').map(|(_, path)| path.to_string())).collect())
 }
 
 fn deinit_submodules(gctx: &mut GlobalContext, repo: &Path) -> CliResult {
@@ -1140,9 +838,7 @@ fn has_submodules(repo: &Path) -> bool {
 }
 
 fn required<'a>(args: &'a ArgMatches, name: &str) -> Result<&'a str, CliError> {
-    args.get_one::<String>(name)
-        .map(String::as_str)
-        .ok_or_else(|| CliError::from(format!("missing required argument `{name}`")))
+    args.get_one::<String>(name).map(String::as_str).ok_or_else(|| CliError::from(format!("missing required argument `{name}`")))
 }
 
 fn path_arg(path: &Path) -> String {

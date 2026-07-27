@@ -8,19 +8,14 @@ use crate::errors::CliError;
 pub fn completion_script(shell: Shell) -> Result<String, CliError> {
     let exe = std::env::current_exe()?;
     let shell_name = shell.to_string();
-    let output = ProcessCommand::new(exe)
-        .env("BP_COMPLETE", &shell_name)
-        .output()?;
+    let output = ProcessCommand::new(exe).env("BP_COMPLETE", &shell_name).output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(CliError::from(format!(
-            "failed to generate {shell_name} completion script: {stderr}"
-        )));
+        return Err(CliError::from(format!("failed to generate {shell_name} completion script: {stderr}")));
     }
 
-    let mut script = String::from_utf8(output.stdout)
-        .map_err(|e| CliError::from(format!("completion script was not valid UTF-8: {e}")))?;
+    let mut script = String::from_utf8(output.stdout).map_err(|e| CliError::from(format!("completion script was not valid UTF-8: {e}")))?;
 
     if shell == Shell::Zsh {
         script.push_str(&zsh_placeholder_widget());
@@ -164,24 +159,16 @@ fn placeholder_commands() -> Vec<PlaceholderCommand> {
     commands
 }
 
-fn collect_placeholder_commands(
-    command: &Command,
-    path: &mut Vec<String>,
-    commands: &mut Vec<PlaceholderCommand>,
-) {
+fn collect_placeholder_commands(command: &Command, path: &mut Vec<String>, commands: &mut Vec<PlaceholderCommand>) {
     let placeholders = positional_placeholders(command);
 
     if path.len() > 1 && !placeholders.is_empty() {
         let value_options = value_options(command);
-        commands.extend(
-            path_alias_variants(path)
-                .into_iter()
-                .map(|path| PlaceholderCommand {
-                    path,
-                    placeholders: placeholders.clone(),
-                    value_options: value_options.clone(),
-                }),
-        );
+        commands.extend(path_alias_variants(path).into_iter().map(|path| PlaceholderCommand {
+            path,
+            placeholders: placeholders.clone(),
+            value_options: value_options.clone(),
+        }));
     }
 
     for subcommand in command.get_subcommands() {
@@ -219,10 +206,7 @@ fn path_alias_variants(path: &[String]) -> Vec<Vec<String>> {
 }
 
 fn positional_placeholders(command: &Command) -> Vec<String> {
-    let mut args = command
-        .get_arguments()
-        .filter(|arg| arg.is_positional() && !arg.is_hide_set())
-        .collect::<Vec<_>>();
+    let mut args = command.get_arguments().filter(|arg| arg.is_positional() && !arg.is_hide_set()).collect::<Vec<_>>();
 
     args.sort_by_key(|arg| arg.get_index().unwrap_or(usize::MAX));
 
@@ -239,10 +223,7 @@ fn placeholder_name(arg: &Arg) -> String {
 fn value_options(command: &Command) -> Vec<String> {
     let mut options = Vec::new();
 
-    for arg in command
-        .get_arguments()
-        .filter(|arg| !arg.is_positional() && arg.get_action().takes_values())
-    {
+    for arg in command.get_arguments().filter(|arg| !arg.is_positional() && arg.get_action().takes_values()) {
         if let Some(long) = arg.get_long() {
             options.push(format!("--{long}"));
         }
@@ -255,12 +236,7 @@ fn value_options(command: &Command) -> Vec<String> {
 }
 
 fn zsh_case(command: &PlaceholderCommand) -> String {
-    format!(
-        "{}:{}:{}",
-        command.path.join(" "),
-        command.placeholders.join(" "),
-        command.value_options.join(" ")
-    )
+    format!("{}:{}:{}", command.path.join(" "), command.placeholders.join(" "), command.value_options.join(" "))
 }
 
 fn zsh_array_literal(values: impl Iterator<Item = String>) -> String {
@@ -278,14 +254,8 @@ mod tests {
     #[test]
     fn generates_worktree_new_placeholder_commands_from_clap() {
         let commands = placeholder_commands();
-        let worktree_new = commands
-            .iter()
-            .find(|command| command.path == ["bp", "worktree", "new"])
-            .expect("worktree new placeholder command");
-        let wt_new = commands
-            .iter()
-            .find(|command| command.path == ["bp", "wt", "new"])
-            .expect("wt new placeholder command");
+        let worktree_new = commands.iter().find(|command| command.path == ["bp", "worktree", "new"]).expect("worktree new placeholder command");
+        let wt_new = commands.iter().find(|command| command.path == ["bp", "wt", "new"]).expect("wt new placeholder command");
 
         assert_eq!(worktree_new.placeholders, ["name", "branch"]);
         assert_eq!(wt_new.placeholders, ["name", "branch"]);

@@ -40,9 +40,7 @@ pub fn command() -> Command {
                 .short('c')
                 .long("config")
                 .help("The clang-format config preset file to use")
-                .long_help(
-                    "branp will search your <config dir>/branp directory for a .clang-format file",
-                )
+                .long_help("branp will search your <config dir>/branp directory for a .clang-format file")
                 .required(false),
         )
         .arg(
@@ -73,25 +71,13 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let config = get_clang_format_config(gctx, args);
 
     for fc in formatters {
-        gctx.shell().note(format!(
-            "Formatting {} file(s) with {}...",
-            fc.files.len(),
-            fc.formatter.name
-        ));
+        gctx.shell().note(format!("Formatting {} file(s) with {}...", fc.files.len(), fc.formatter.name));
         for file in fc.files {
             let mut command = (fc.formatter.runner)(&file, &config);
-            let output = command.output().map_err(|e| {
-                CliError::new(
-                    format!("failed to run formatter on {}: {}", file.display(), e),
-                    1,
-                )
-            })?;
+            let output = command.output().map_err(|e| CliError::new(format!("failed to run formatter on {}: {}", file.display(), e), 1))?;
 
             if !output.status.success() {
-                gctx.shell().error(format!(
-                    "Failed to format file: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                ));
+                gctx.shell().error(format!("Failed to format file: {}", String::from_utf8_lossy(&output.stderr)));
             }
         }
     }
@@ -106,11 +92,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
 /// `entries` and collects files that are associated with a specific formatter.
 ///
 /// Each [`CodeFormatter`] is simply a pointer to the global static definition of the formatter.
-fn get_formatters(
-    entries: fs::ReadDir,
-    mut formatters: Vec<FormatCollection>,
-    include_submodules: bool,
-) -> Result<Vec<FormatCollection>, CliError> {
+fn get_formatters(entries: fs::ReadDir, mut formatters: Vec<FormatCollection>, include_submodules: bool) -> Result<Vec<FormatCollection>, CliError> {
     for entry in entries.filter_map(Result::ok) {
         let path = entry.path();
         if path.is_dir() {
@@ -121,16 +103,10 @@ fn get_formatters(
             let sub_entries = fs::read_dir(&path)?;
             formatters = get_formatters(sub_entries, formatters, include_submodules)?;
         } else if let Some(formatter) = get_code_formatter(&path) {
-            if let Some(created_formatter) = formatters
-                .iter_mut()
-                .find(|f| f.formatter.name == formatter.name)
-            {
+            if let Some(created_formatter) = formatters.iter_mut().find(|f| f.formatter.name == formatter.name) {
                 created_formatter.files.push(path);
             } else {
-                formatters.push(FormatCollection {
-                    files: vec![path],
-                    formatter,
-                });
+                formatters.push(FormatCollection { files: vec![path], formatter });
             }
         }
     }
@@ -181,9 +157,7 @@ fn get_clang_format_config(gctx: &mut GlobalContext, args: &ArgMatches) -> Optio
         .map(|(path, _)| path.to_string_lossy().into_owned());
 
     if config_file.is_none() {
-        gctx.shell().warn(format!(
-            "No config file found for {config}. Available configs: {config_names:?}"
-        ));
+        gctx.shell().warn(format!("No config file found for {config}. Available configs: {config_names:?}"));
         return None;
     }
 
@@ -213,11 +187,8 @@ fn clang_format_command(file: &PathBuf, config: &Option<String>) -> ProcessComma
 
 // For more information about the clang-format auto formatter visit:
 // https://clang.llvm.org/docs/ClangFormat.html
-const CLANG: CodeFormatter = CodeFormatter {
-    name: "clang-format",
-    valid_extensions: &["cpp", "h", "cc", "hpp", "cxx", "c", "cs"],
-    runner: clang_format_command,
-};
+const CLANG: CodeFormatter =
+    CodeFormatter { name: "clang-format", valid_extensions: &["cpp", "h", "cc", "hpp", "cxx", "c", "cs"], runner: clang_format_command };
 
 /// Command: `autopep8 --in-place --max-line-length 120 --aggressive --aggressive <file>`
 fn autopep8_format_command(file: &PathBuf, _config: &Option<String>) -> ProcessCommand {
@@ -236,11 +207,7 @@ fn autopep8_format_command(file: &PathBuf, _config: &Option<String>) -> ProcessC
 
 // For more information about the autopep8 auto formatter visit:
 // https://pypi.org/project/autopep8/
-const AUTOPEP8: CodeFormatter = CodeFormatter {
-    name: "autopep8",
-    valid_extensions: &["py"],
-    runner: autopep8_format_command,
-};
+const AUTOPEP8: CodeFormatter = CodeFormatter { name: "autopep8", valid_extensions: &["py"], runner: autopep8_format_command };
 
 const FORMATTERS: [&CodeFormatter; 2] = [&CLANG, &AUTOPEP8];
 

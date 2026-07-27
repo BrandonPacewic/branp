@@ -13,21 +13,8 @@ pub fn command() -> Command {
         .about("Diagnose and repair local CLI integration issues")
         .subcommand_required(false)
         .arg_required_else_help(false)
-        .arg(
-            Arg::new("fix")
-                .long("fix")
-                .help("Apply available fixes")
-                .action(ArgAction::SetTrue)
-                .global(true),
-        )
-        .arg(
-            Arg::new("yes")
-                .short('y')
-                .long("yes")
-                .help("Apply fixes without prompting")
-                .action(ArgAction::SetTrue)
-                .global(true),
-        )
+        .arg(Arg::new("fix").long("fix").help("Apply available fixes").action(ArgAction::SetTrue).global(true))
+        .arg(Arg::new("yes").short('y').long("yes").help("Apply fixes without prompting").action(ArgAction::SetTrue).global(true))
         .subcommand(Command::new("links").about("Check terminal hyperlink support"))
 }
 
@@ -38,13 +25,10 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
         Some(("links", _)) | None => CheckSelector::Links,
         Some((name, _)) => return Err(CliError::from(format!("unknown doctor check `{name}`"))),
     };
-    let ctx = DoctorContext {
-        home: gctx.home().clone(),
-    };
+    let ctx = DoctorContext { home: gctx.home().clone() };
 
     for report in doctor::run(&ctx, selector) {
-        gctx.shell()
-            .note(color_print::cformat!("<cyan,bold>{}</>", report.name));
+        gctx.shell().note(color_print::cformat!("<cyan,bold>{}</>", report.name));
         gctx.shell().note(format!("  {}", report.summary));
 
         let mut fixes = Vec::new();
@@ -59,8 +43,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
         if fix {
             apply_fixes(gctx, fixes, yes)?;
         } else if !fixes.is_empty() {
-            gctx.shell()
-                .note("  Run `bp doctor links --fix` to apply available fixes.");
+            gctx.shell().note("  Run `bp doctor links --fix` to apply available fixes.");
         }
     }
 
@@ -75,8 +58,7 @@ fn print_finding(gctx: &mut GlobalContext, finding: &Finding) {
         Severity::Error => color_print::cformat!("<red,bold>error</>"),
     };
 
-    gctx.shell()
-        .note(format!("  {label} [{}] {}", finding.id, finding.title));
+    gctx.shell().note(format!("  {label} [{}] {}", finding.id, finding.title));
     for detail in &finding.details {
         if !detail.trim().is_empty() {
             gctx.shell().note(format!("    {detail}"));
@@ -102,8 +84,7 @@ fn apply_fixes(gctx: &mut GlobalContext, fixes: Vec<Fix>, yes: bool) -> CliResul
 
     for fix in fixes {
         let outcome = doctor::apply_fix(fix)?;
-        gctx.shell()
-            .note(format!("  Applied: {}", outcome.description));
+        gctx.shell().note(format!("  Applied: {}", outcome.description));
         for warning in outcome.warnings {
             gctx.shell().warn(warning);
         }
