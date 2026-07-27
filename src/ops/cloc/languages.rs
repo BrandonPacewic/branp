@@ -1,4 +1,4 @@
-// Generated from `github.com/AlDanial/cloc`'s language tables.
+// Generated from cloc's language tables.
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LanguageDescription {
