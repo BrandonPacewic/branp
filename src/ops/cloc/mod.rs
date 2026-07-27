@@ -2,7 +2,6 @@ use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -55,6 +54,7 @@ struct Count {
 struct CountedFile {
     path: PathBuf,
     language: &'static str,
+    syntax: Option<&'static languages::CommentSyntax>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -122,16 +122,12 @@ pub fn count_paths_for_bench(paths: &[PathBuf]) -> BenchCountReport {
 
 fn count_paths(paths: &[PathBuf]) -> CountReport {
     let start = Instant::now();
-    let discovered = collect_files(paths);
-    let (by_language, count_ignored_files) = count_files_parallel(discovered.files);
+    let (by_language, stats, count_ignored_files) = count_paths_parallel(paths);
     CountReport {
         by_language,
         stats: DiscoveryStats {
-            text_files: discovered
-                .stats
-                .text_files
-                .saturating_sub(count_ignored_files),
-            ignored_files: discovered.stats.ignored_files + count_ignored_files,
+            text_files: stats.text_files.saturating_sub(count_ignored_files),
+            ignored_files: stats.ignored_files + count_ignored_files,
         },
         elapsed: start.elapsed(),
     }
@@ -168,7 +164,7 @@ fn count_paths_live(paths: &[PathBuf], render_options: RenderOptions) -> io::Res
             scope.spawn(move || {
                 while let Some(file) = work_queue.pop() {
                     let count =
-                        count_file(&file.path, file.language)
+                        count_file(&file.path, file.syntax)
                             .ok()
                             .flatten()
                             .map(|mut count| {
@@ -293,7 +289,7 @@ fn discover_path(
             return;
         }
         if let Some(language) = detect_language(&path) {
-            on_file(CountedFile { path, language });
+            on_file(counted_file(path, language));
         } else {
             on_ignored_file();
         }
@@ -311,51 +307,6 @@ fn discover_path(
     for entry in entries.filter_map(Result::ok) {
         queue.push_back(entry.path());
     }
-}
-
-struct DiscoveredFiles {
-    files: Vec<CountedFile>,
-    stats: DiscoveryStats,
-}
-
-fn collect_files(paths: &[PathBuf]) -> DiscoveredFiles {
-    let mut files = Vec::new();
-    let mut stats = DiscoveryStats::default();
-    let mut stack = paths.to_vec();
-
-    while let Some(path) = stack.pop() {
-        let Ok(metadata) = fs::symlink_metadata(&path) else {
-            continue;
-        };
-
-        if metadata.is_file() {
-            if should_skip_file(&path) {
-                stats.ignored_files += 1;
-                continue;
-            }
-            if let Some(language) = detect_language(&path) {
-                stats.text_files += 1;
-                files.push(CountedFile { path, language });
-            } else {
-                stats.ignored_files += 1;
-            }
-            continue;
-        }
-
-        if !metadata.is_dir() || should_skip_dir(&path) {
-            continue;
-        }
-
-        let Ok(entries) = fs::read_dir(path) else {
-            continue;
-        };
-
-        for entry in entries.filter_map(Result::ok) {
-            stack.push(entry.path());
-        }
-    }
-
-    DiscoveredFiles { files, stats }
 }
 
 struct WorkQueue {
@@ -566,11 +517,19 @@ fn detect_language(path: &Path) -> Option<&'static str> {
         return Some(canonical_language(language));
     }
 
-    let dot_indices = filename
-        .match_indices('.')
-        .map(|(index, _)| index)
-        .collect::<Vec<_>>();
-    for index in dot_indices.iter().rev().take(3).rev() {
+    let mut dot_indices = [0; 3];
+    let mut dot_count = 0;
+    for (index, _) in filename.match_indices('.') {
+        if dot_count < dot_indices.len() {
+            dot_indices[dot_count] = index;
+            dot_count += 1;
+        } else {
+            dot_indices.rotate_left(1);
+            dot_indices[dot_indices.len() - 1] = index;
+        }
+    }
+
+    for index in &dot_indices[..dot_count] {
         let suffix = &filename[index + 1..];
         if let Some(language) = languages::language_for_extension(suffix) {
             return Some(canonical_language(language));
@@ -644,34 +603,23 @@ fn should_skip_file(path: &Path) -> bool {
     )
 }
 
-fn count_files_parallel(files: Vec<CountedFile>) -> (HashMap<&'static str, Count>, u64) {
-    if files.is_empty() {
-        return (HashMap::new(), 0);
-    }
-
+fn count_paths_parallel(paths: &[PathBuf]) -> (HashMap<&'static str, Count>, DiscoveryStats, u64) {
     let worker_count = thread::available_parallelism()
         .map(usize::from)
         .unwrap_or(1)
-        .min(files.len());
-    let files = Arc::new(files);
-    let next = Arc::new(AtomicUsize::new(0));
+        .max(1);
+    let work_queue = Arc::new(WorkQueue::new(Vec::new()));
 
     thread::scope(|scope| {
         let mut workers = Vec::with_capacity(worker_count);
 
         for _ in 0..worker_count {
-            let files = Arc::clone(&files);
-            let next = Arc::clone(&next);
+            let work_queue = Arc::clone(&work_queue);
             workers.push(scope.spawn(move || {
                 let mut by_language = HashMap::new();
                 let mut ignored_files = 0;
-                loop {
-                    let index = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(file) = files.get(index) else {
-                        break;
-                    };
-
-                    if let Ok(Some(file_count)) = count_file(&file.path, file.language) {
+                while let Some(file) = work_queue.pop() {
+                    if let Ok(Some(file_count)) = count_file(&file.path, file.syntax) {
                         let count = by_language
                             .entry(file.language)
                             .or_insert_with(Count::default);
@@ -684,6 +632,9 @@ fn count_files_parallel(files: Vec<CountedFile>) -> (HashMap<&'static str, Count
                 (by_language, ignored_files)
             }));
         }
+
+        let stats = collect_files_into_queue(paths, &work_queue);
+        work_queue.finish();
 
         let mut total = HashMap::new();
         let mut ignored_files = 0;
@@ -698,11 +649,43 @@ fn count_files_parallel(files: Vec<CountedFile>) -> (HashMap<&'static str, Count
                 }
             }
         }
-        (total, ignored_files)
+        (total, stats, ignored_files)
     })
 }
 
-fn count_file(path: &Path, language: &str) -> io::Result<Option<Count>> {
+fn collect_files_into_queue(paths: &[PathBuf], work_queue: &WorkQueue) -> DiscoveryStats {
+    let mut stats = DiscoveryStats::default();
+    let mut stack = paths.iter().cloned().collect::<VecDeque<_>>();
+
+    while let Some(path) = stack.pop_back() {
+        discover_path(
+            path,
+            &mut stack,
+            |file| {
+                stats.text_files += 1;
+                work_queue.push(file);
+            },
+            || {
+                stats.ignored_files += 1;
+            },
+        );
+    }
+
+    stats
+}
+
+fn counted_file(path: PathBuf, language: &'static str) -> CountedFile {
+    CountedFile {
+        path,
+        language,
+        syntax: languages::comment_syntax_for_language(language),
+    }
+}
+
+fn count_file(
+    path: &Path,
+    syntax: Option<&'static languages::CommentSyntax>,
+) -> io::Result<Option<Count>> {
     let mut file = File::open(path)?;
     let mut bytes = Vec::new();
     let mut buffer = [0; READ_BUFFER_SIZE];
@@ -720,10 +703,7 @@ fn count_file(path: &Path, language: &str) -> io::Result<Option<Count>> {
         bytes.extend_from_slice(chunk);
     }
 
-    Ok(Some(count_bytes(
-        &bytes,
-        languages::comment_syntax_for_language(language),
-    )))
+    Ok(Some(count_bytes(&bytes, syntax)))
 }
 
 fn print_report(report: &CountReport, options: RenderOptions) {
@@ -976,26 +956,21 @@ fn count_bytes(bytes: &[u8], syntax: Option<&languages::CommentSyntax>) -> Count
 }
 
 fn trim_ascii(bytes: &[u8]) -> &[u8] {
-    let start = bytes
-        .iter()
-        .position(|byte| !byte.is_ascii_whitespace())
-        .unwrap_or(bytes.len());
-    let end = bytes
-        .iter()
-        .rposition(|byte| !byte.is_ascii_whitespace())
-        .map(|index| index + 1)
-        .unwrap_or(start);
+    let mut start = 0;
+    while start < bytes.len() && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+
+    let mut end = bytes.len();
+    while end > start && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+
     &bytes[start..end]
 }
 
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-
-    haystack
-        .windows(needle.len())
-        .any(|window| window == needle)
+    memchr::memmem::find(haystack, needle).is_some()
 }
 
 #[cfg(test)]
