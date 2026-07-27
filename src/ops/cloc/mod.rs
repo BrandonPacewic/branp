@@ -894,7 +894,7 @@ fn format_integer_with_commas(value: String) -> String {
     for (index, ch) in value.chars().enumerate() {
         if index > 0
             && (index == first_group_len
-                || (index > first_group_len && (index - first_group_len) % 3 == 0))
+                || (index > first_group_len && (index - first_group_len).is_multiple_of(3)))
         {
             formatted.push(',');
         }
@@ -1014,7 +1014,7 @@ mod tests {
         fs::write(root.join("binary.bin"), b"one\0two\n").unwrap();
         fs::write(root.join("artifact.rlib"), b"not\ncounted\n").unwrap();
 
-        let report = count_paths(&[root.clone()]);
+        let report = count_paths(std::slice::from_ref(&root));
         let text = report.by_language.get("Text").copied().unwrap_or_default();
 
         assert_eq!(
@@ -1038,7 +1038,7 @@ mod tests {
         fs::write(root.join(".git/config"), "hidden\n").unwrap();
         fs::write(root.join("visible.txt"), "visible\n").unwrap();
 
-        let report = count_paths(&[root.clone()]);
+        let report = count_paths(std::slice::from_ref(&root));
         let text = report.by_language.get("Text").copied().unwrap_or_default();
 
         assert_eq!(
