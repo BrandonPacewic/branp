@@ -72,7 +72,9 @@ function ensure_rust_toolchain() {
 }
 
 function pinned_cargo() {
-	rustup run "$RUST_TOOLCHAIN" cargo "$@"
+	local rustfmt
+	rustfmt="$(rustup which --toolchain "$RUST_TOOLCHAIN" rustfmt)"
+	RUSTFMT="$rustfmt" rustup run "$RUST_TOOLCHAIN" cargo "$@"
 }
 
 function pinned_rustc() {
@@ -83,7 +85,12 @@ function check_rust_version() {
 	local actual
 	actual="$(pinned_rustc --version)"
 
-	if [[ "$actual" != rustc\ "$RUST_TOOLCHAIN"* ]]; then
+	if [[ "$RUST_TOOLCHAIN" == nightly* ]]; then
+		if [[ "$actual" != rustc\ *-nightly* ]]; then
+			echo "Expected nightly rustc from rust-toolchain.toml, got: $actual"
+			return 1
+		fi
+	elif [[ "$actual" != rustc\ "$RUST_TOOLCHAIN"* ]]; then
 		echo "Expected rustc $RUST_TOOLCHAIN from rust-toolchain.toml, got: $actual"
 		return 1
 	fi
