@@ -12,6 +12,12 @@ NC='\033[0m'
 
 FAILED=0
 FAST=0
+RUST_TOOLCHAIN="$(awk -F '"' '/^[[:space:]]*channel[[:space:]]*=/{print $2; exit}' rust-toolchain.toml)"
+
+if [[ -z "$RUST_TOOLCHAIN" ]]; then
+	echo "Unable to read Rust toolchain from rust-toolchain.toml"
+	exit 1
+fi
 
 while [[ $# -gt 0 ]]; do
 	case $1 in
@@ -30,7 +36,7 @@ done
 
 function run_check() {
 	local name="$1"
-	local cmd="$2"
+	shift
 
 	local name_len=${#name}
 	local dots_len=$((46 - name_len))
@@ -39,7 +45,7 @@ function run_check() {
 	printf "%s%s" "$name" "$dots"
 
 	set +e
-	log=$(eval "$cmd" 2>&1)
+	log=$("$@" 2>&1)
 	result=$?
 	set -e
 
@@ -50,6 +56,40 @@ function run_check() {
 		echo "$log"
 		FAILED=1
 	fi
+}
+
+function ensure_rust_toolchain() {
+	if ! command -v rustup >/dev/null 2>&1; then
+		echo "rustup is required so local and CI use Rust $RUST_TOOLCHAIN from rust-toolchain.toml"
+		return 1
+	fi
+
+	if ! rustup run "$RUST_TOOLCHAIN" rustc --version >/dev/null 2>&1 \
+		|| ! rustup component list --toolchain "$RUST_TOOLCHAIN" --installed | grep -q '^clippy-' \
+		|| ! rustup component list --toolchain "$RUST_TOOLCHAIN" --installed | grep -q '^rustfmt-'; then
+		rustup toolchain install "$RUST_TOOLCHAIN" --component clippy --component rustfmt
+	fi
+}
+
+function pinned_cargo() {
+	rustup run "$RUST_TOOLCHAIN" cargo "$@"
+}
+
+function pinned_rustc() {
+	rustup run "$RUST_TOOLCHAIN" rustc "$@"
+}
+
+function check_rust_version() {
+	local actual
+	actual="$(pinned_rustc --version)"
+
+	if [[ "$actual" != rustc\ "$RUST_TOOLCHAIN"* ]]; then
+		echo "Expected rustc $RUST_TOOLCHAIN from rust-toolchain.toml, got: $actual"
+		return 1
+	fi
+
+	echo "$actual"
+	pinned_cargo --version
 }
 
 function check_large_files() {
@@ -66,14 +106,24 @@ function check_large_files() {
 	return "$found"
 }
 
-run_check "check_default_branch" "[[ \$(git rev-parse --abbrev-ref HEAD) != mega ]]"
-run_check "cargo_fmt" "cargo fmt --all -- --check"
-run_check "cargo_clippy" "cargo clippy --all-targets --all-features -- -D warnings"
-run_check "check_large_files" "check_large_files"
-run_check "check_merge_conflicts" "! git ls-files | xargs grep -lP '^(<{7}|={7}|>{7})' 2>/dev/null | grep -q ."
+function check_default_branch() {
+	[[ "$(git rev-parse --abbrev-ref HEAD)" != mega ]]
+}
+
+function check_merge_conflicts() {
+	! git ls-files | xargs grep -lE '^(<{7}|={7}|>{7})' 2>/dev/null | grep -q .
+}
+
+run_check "rust_toolchain" ensure_rust_toolchain
+run_check "rust_version" check_rust_version
+run_check "check_default_branch" check_default_branch
+run_check "cargo_fmt" pinned_cargo fmt --all -- --check
+run_check "cargo_clippy" pinned_cargo clippy --all-targets --all-features -- -D warnings
+run_check "check_large_files" check_large_files
+run_check "check_merge_conflicts" check_merge_conflicts
 
 if [[ "$FAST" -eq 0 ]]; then
-	run_check "build" "cargo build"
+	run_check "build" pinned_cargo build
 fi
 
 echo ""
