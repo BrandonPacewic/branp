@@ -106,6 +106,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "color-print",
+ "memchr",
  "reqwest",
  "serde",
  "serde_json",

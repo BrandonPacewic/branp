@@ -5,6 +5,7 @@ use crate::errors::CliResult;
 
 pub fn branp() -> Vec<Command> {
     vec![
+        cloc::command(),
         doctor::command(),
         dbrun::command().alias("r"),
         sample_gen::command(),
@@ -21,6 +22,7 @@ pub type Exec = fn(&mut GlobalContext, &ArgMatches) -> CliResult;
 
 pub fn branp_exec(cmd: &str) -> Option<Exec> {
     let exec = match cmd {
+        "cloc" => cloc::exec,
         "dbrun" => dbrun::exec,
         "doctor" => doctor::exec,
         "sample-gen" => sample_gen::exec,
@@ -36,6 +38,7 @@ pub fn branp_exec(cmd: &str) -> Option<Exec> {
     Some(exec)
 }
 
+pub mod cloc;
 pub mod dbrun;
 pub mod doctor;
 pub mod format;
