@@ -20,6 +20,7 @@ const NUMBER_COLUMNS: usize = 4;
 const DEFAULT_NUMBER_COLUMN_DIGITS: usize = 8;
 const READ_BUFFER_SIZE: usize = 256 * 1024;
 const INITIAL_DISCOVERY_ITERATIONS: usize = 128;
+const WORK_QUEUE_BATCH_SIZE: usize = 64;
 const LIVE_RENDER_INTERVAL: Duration = Duration::from_millis(50);
 
 pub struct ClocOptions<'a> {
@@ -349,6 +350,28 @@ impl WorkQueue {
         }
     }
 
+    fn pop_batch(&self, files: &mut Vec<CountedFile>) -> bool {
+        files.clear();
+
+        let mut state = self.state.lock().unwrap();
+        loop {
+            if let Some(file) = state.files.pop_front() {
+                files.push(file);
+                while files.len() < WORK_QUEUE_BATCH_SIZE {
+                    let Some(file) = state.files.pop_front() else {
+                        break;
+                    };
+                    files.push(file);
+                }
+                return true;
+            }
+            if state.done {
+                return false;
+            }
+            state = self.available.wait(state).unwrap();
+        }
+    }
+
     fn finish(&self) {
         let mut state = self.state.lock().unwrap();
         state.done = true;
@@ -618,15 +641,18 @@ fn count_paths_parallel(paths: &[PathBuf]) -> (HashMap<&'static str, Count>, Dis
             workers.push(scope.spawn(move || {
                 let mut by_language = HashMap::new();
                 let mut ignored_files = 0;
-                while let Some(file) = work_queue.pop() {
-                    if let Ok(Some(file_count)) = count_file(&file.path, file.syntax) {
-                        let count = by_language
-                            .entry(file.language)
-                            .or_insert_with(Count::default);
-                        count.files += 1;
-                        count.add(file_count);
-                    } else {
-                        ignored_files += 1;
+                let mut files = Vec::with_capacity(WORK_QUEUE_BATCH_SIZE);
+                while work_queue.pop_batch(&mut files) {
+                    for file in files.drain(..) {
+                        if let Ok(Some(file_count)) = count_file(&file.path, file.syntax) {
+                            let count = by_language
+                                .entry(file.language)
+                                .or_insert_with(Count::default);
+                            count.files += 1;
+                            count.add(file_count);
+                        } else {
+                            ignored_files += 1;
+                        }
                     }
                 }
                 (by_language, ignored_files)
