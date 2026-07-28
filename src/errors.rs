@@ -2,6 +2,7 @@ use std::fmt;
 
 pub type CliResult = Result<(), CliError>;
 
+#[derive(Debug)]
 pub struct CliError {
     pub message: String,
     pub code: i32,
