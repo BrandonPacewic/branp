@@ -197,6 +197,8 @@ fn create(gctx: &mut GlobalContext, repo: &Repo, name: &str, branch: &str, fetch
         return Err(CliError::from(format!("worktree already exists: {}", target.display())));
     }
 
+    let start_point = confirm_default_source_branch(gctx, repo)?;
+
     if fetch {
         let _ = git::run(&repo.base, &["fetch", "origin", branch]);
     }
@@ -207,6 +209,8 @@ fn create(gctx: &mut GlobalContext, repo: &Repo, name: &str, branch: &str, fetch
 
     if git::remote_branch_exists(&repo.base, "origin", branch)? {
         git::run(&repo.base, &["worktree", "add", path_arg(&target).as_str(), "-b", branch, &format!("origin/{branch}")])?;
+    } else if let Some(start_point) = start_point {
+        git::run(&repo.base, &["worktree", "add", path_arg(&target).as_str(), "-b", branch, &start_point])?;
     } else {
         git::run(&repo.base, &["worktree", "add", path_arg(&target).as_str(), "-b", branch])?;
     }
@@ -768,6 +772,28 @@ fn confirm_lossy_remove(gctx: &mut GlobalContext, repo: &Path) -> Result<bool, C
         Ok(true)
     } else {
         Err(CliError::from("worktree removal cancelled"))
+    }
+}
+
+fn confirm_default_source_branch(gctx: &mut GlobalContext, repo: &Repo) -> Result<Option<String>, CliError> {
+    let current_branch = git::current_branch(&repo.base)?;
+    if current_branch.as_deref() == Some(repo.default_branch.as_str()) {
+        return Ok(None);
+    }
+
+    let current_branch = current_branch.unwrap_or_else(|| "detached HEAD".to_string());
+    gctx.shell().warn(format!(
+        "base worktree is on `{current_branch}`, not the default branch `{}`; the new worktree will branch from the current base HEAD",
+        repo.default_branch
+    ));
+    if gctx.shell().confirm("Continue creating the worktree?")? {
+        return Ok(None);
+    }
+
+    if gctx.shell().confirm(format!("Create the worktree from `{}` instead?", repo.default_branch))? {
+        Ok(Some(repo.default_branch.clone()))
+    } else {
+        Err(CliError::from("worktree creation cancelled"))
     }
 }
 

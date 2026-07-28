@@ -107,6 +107,15 @@ impl Shell {
         eprintln!("{}", color_print::cformat!("<red,bold>error</>: {}", message));
     }
 
+    pub fn confirm<T: fmt::Display>(&mut self, prompt: T) -> Result<bool, CliError> {
+        eprint!("{prompt} [y/N] ");
+        io::stderr().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
+    }
+
     pub fn set_verbosity(&mut self, verbosity: Verbosity) {
         self.verbosity = verbosity;
     }
