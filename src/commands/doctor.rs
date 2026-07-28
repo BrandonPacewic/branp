@@ -1,7 +1,5 @@
 //! CLI adapter for environment and configuration diagnostics.
 
-use std::io::{self, Write};
-
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::context::GlobalContext;
@@ -77,7 +75,7 @@ fn apply_fixes(gctx: &mut GlobalContext, fixes: Vec<Fix>, yes: bool) -> CliResul
         gctx.shell().note(format!("    - {}", fix.description()));
     }
 
-    if !yes && !confirm("Apply these fixes?")? {
+    if !yes && !gctx.shell().confirm("Apply these fixes?")? {
         gctx.shell().note("  Fixes skipped.");
         return Ok(());
     }
@@ -91,13 +89,4 @@ fn apply_fixes(gctx: &mut GlobalContext, fixes: Vec<Fix>, yes: bool) -> CliResul
     }
 
     Ok(())
-}
-
-fn confirm(prompt: &str) -> Result<bool, CliError> {
-    eprint!("{prompt} [y/N] ");
-    io::stderr().flush()?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
 }
