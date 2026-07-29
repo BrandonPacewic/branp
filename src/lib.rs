@@ -1,3 +1,4 @@
+pub mod config;
 pub mod context;
 pub mod doctor;
 pub mod errors;

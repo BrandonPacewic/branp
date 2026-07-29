@@ -23,6 +23,7 @@ memchr = "2.7.4"
 reqwest = { version = "0.13.4", features = ["blocking", "json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+toml_edit = "0.25.10"
 
 [workspace]
 members = ["benches/benchsuite"]

@@ -10,6 +10,7 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::context::GlobalContext;
 use crate::errors::{CliError, CliResult};
+use crate::ops::worktree::LinkStore;
 use crate::utils::git;
 
 pub fn command() -> Command {
@@ -54,6 +55,18 @@ pub fn command() -> Command {
                 .arg(Arg::new("force").short('f').long("force").help("Force worktree removal and branch deletion").action(ArgAction::SetTrue))
                 .arg(Arg::new("no-tmux").long("no-tmux").help("Do not kill matching tmux sessions").action(ArgAction::SetTrue)),
         )
+        .subcommand(
+            Command::new("track")
+                .about("Track untracked files that should be symlinked into every worktree")
+                .arg(Arg::new("path").required(true).num_args(1..).value_name("PATH"))
+                .arg(Arg::new("force").short('f').long("force").help("Replace existing files in other worktrees").action(ArgAction::SetTrue)),
+        )
+        .subcommand(Command::new("links").about("List files linked across worktrees"))
+        .subcommand(
+            Command::new("sync")
+                .about("Create or repair symlinks for files tracked in .branp/worktree.toml")
+                .arg(Arg::new("force").short('f').long("force").help("Replace existing non-symlink paths").action(ArgAction::SetTrue)),
+        )
 }
 
 pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
@@ -80,6 +93,9 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
             Ok(())
         }
         Some(("gone", sub)) => remove_gone(gctx, &repo, sub.get_flag("dry-run"), sub.get_flag("force"), !sub.get_flag("no-tmux")),
+        Some(("track", sub)) => track_links(gctx, &repo, required_many(sub, "path")?, sub.get_flag("force")),
+        Some(("links", _)) => list_links(gctx, &repo),
+        Some(("sync", sub)) => sync_links(gctx, &repo, None, sub.get_flag("force")),
         _ => Err(CliError::from("no `worktree` subcommand provided")),
     }
 }
@@ -219,6 +235,8 @@ fn create(gctx: &mut GlobalContext, repo: &Repo, name: &str, branch: &str, fetch
         git::run(&target, &["submodule", "update", "--init", "--recursive"])?;
     }
 
+    sync_links(gctx, repo, Some(&target), false)?;
+
     if tmux {
         crate::utils::tmux::ensure_session(gctx, &repo.session_name(name), &target)?;
     }
@@ -292,6 +310,7 @@ fn remove_gone(gctx: &mut GlobalContext, repo: &Repo, dry_run: bool, force: bool
 
 struct Repo {
     base: PathBuf,
+    current: PathBuf,
     default_branch: String,
 }
 
@@ -301,7 +320,7 @@ impl Repo {
         let base = worktrees(&root)?.into_iter().next().map(|w| w.path).ok_or("could not determine base worktree")?;
         let default_branch = default_branch(&base)?;
 
-        Ok(Self { base, default_branch })
+        Ok(Self { base, current: root, default_branch })
     }
 
     fn target_dir(&self, name: &str) -> PathBuf {
@@ -315,6 +334,36 @@ impl Repo {
     fn name_from_path(&self, path: &Path) -> Option<String> {
         name_from_worktree_path(&self.base, path)
     }
+
+    fn link_store(&self) -> LinkStore {
+        LinkStore::new(&self.base, &self.current)
+    }
+}
+
+fn track_links(gctx: &mut GlobalContext, repo: &Repo, paths: Vec<&str>, force: bool) -> CliResult {
+    let tracked = repo.link_store().track(&paths, &worktree_paths(repo)?, force)?;
+
+    for rel in tracked {
+        gctx.shell().note(format!("linked {}", rel.display()));
+    }
+    Ok(())
+}
+
+fn list_links(gctx: &mut GlobalContext, repo: &Repo) -> CliResult {
+    for rel in repo.link_store().linked_paths()? {
+        gctx.shell().note(rel.display());
+    }
+    Ok(())
+}
+
+fn sync_links(gctx: &mut GlobalContext, repo: &Repo, only_worktree: Option<&Path>, force: bool) -> CliResult {
+    let worktrees = if let Some(worktree) = only_worktree { vec![worktree.to_path_buf()] } else { worktree_paths(repo)? };
+    repo.link_store().sync(&worktrees, force)?;
+
+    if only_worktree.is_none() {
+        gctx.shell().note("worktree links synced");
+    }
+    Ok(())
 }
 
 fn default_branch(repo: &Path) -> Result<String, CliError> {
@@ -385,6 +434,10 @@ fn worktrees(repo: &Path) -> Result<Vec<Worktree>, CliError> {
     }
 
     Ok(items)
+}
+
+fn worktree_paths(repo: &Repo) -> Result<Vec<PathBuf>, CliError> {
+    Ok(worktrees(&repo.base)?.into_iter().map(|worktree| worktree.path).collect())
 }
 
 #[derive(Clone, Default)]
@@ -893,6 +946,12 @@ fn has_submodules(repo: &Path) -> bool {
 
 fn required<'a>(args: &'a ArgMatches, name: &str) -> Result<&'a str, CliError> {
     args.get_one::<String>(name).map(String::as_str).ok_or_else(|| CliError::from(format!("missing required argument `{name}`")))
+}
+
+fn required_many<'a>(args: &'a ArgMatches, name: &str) -> Result<Vec<&'a str>, CliError> {
+    args.get_many::<String>(name)
+        .map(|values| values.map(String::as_str).collect())
+        .ok_or_else(|| CliError::from(format!("missing required argument `{name}`")))
 }
 
 fn path_arg(path: &Path) -> String {
