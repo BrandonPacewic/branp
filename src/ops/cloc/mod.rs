@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use memchr::memchr;
 
 use crate::context::GlobalContext;
-use crate::errors::CliResult;
+use crate::errors::{CliError, CliResult};
+use crate::utils::git;
 use crate::utils::terminal::{supports_dynamic_lines, DynamicRenderLoop};
 
 mod languages;
@@ -24,9 +25,18 @@ const WORK_QUEUE_BATCH_SIZE: usize = 64;
 const LIVE_RENDER_INTERVAL: Duration = Duration::from_millis(50);
 
 pub struct ClocOptions<'a> {
-    pub paths: Vec<&'a str>,
+    pub target: ClocTarget<'a>,
     pub live: bool,
     pub commas: bool,
+}
+
+pub enum ClocTarget<'a> {
+    Paths(Vec<&'a str>),
+    Git(GitClocTarget<'a>),
+}
+
+pub enum GitClocTarget<'a> {
+    WorktreeDiff { pathspecs: Vec<&'a str> },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -36,6 +46,12 @@ pub struct BenchCountReport {
     pub blank: u64,
     pub comment: u64,
     pub code: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DiffCountSummary {
+    pub added: BenchCountReport,
+    pub removed: BenchCountReport,
 }
 
 #[derive(Clone, Copy)]
@@ -71,6 +87,12 @@ struct CountReport {
     elapsed: Duration,
 }
 
+#[derive(Clone, Debug, Default)]
+struct DiffCountReport {
+    added: CountReport,
+    removed: CountReport,
+}
+
 impl Count {
     fn add(&mut self, other: Self) {
         self.files += other.files;
@@ -85,15 +107,26 @@ impl Count {
 }
 
 pub fn cloc(gctx: &mut GlobalContext, options: &ClocOptions<'_>) -> CliResult {
-    let paths = options.paths.iter().map(PathBuf::from).collect::<Vec<_>>();
+    match &options.target {
+        ClocTarget::Paths(paths) => {
+            let paths = paths.iter().map(PathBuf::from).collect::<Vec<_>>();
 
-    if gctx.shell().is_quiet() {
-        let _ = count_paths(&paths);
-    } else if options.live && supports_dynamic_lines() {
-        let _ = count_paths_live(&paths, RenderOptions { commas: options.commas })?;
-    } else {
-        let report = count_paths(&paths);
-        print_report(&report, RenderOptions { commas: options.commas });
+            if gctx.shell().is_quiet() {
+                let _ = count_paths(&paths);
+            } else if options.live && supports_dynamic_lines() {
+                let _ = count_paths_live(&paths, RenderOptions { commas: options.commas })?;
+            } else {
+                let report = count_paths(&paths);
+                print_report(&report, RenderOptions { commas: options.commas });
+            }
+        }
+        ClocTarget::Git(target) => {
+            let repo = gctx.cwd().clone();
+            let report = count_git_target(&repo, target)?;
+            if !gctx.shell().is_quiet() {
+                print_diff_report(&report, RenderOptions { commas: options.commas });
+            }
+        }
     }
 
     Ok(())
@@ -101,14 +134,12 @@ pub fn cloc(gctx: &mut GlobalContext, options: &ClocOptions<'_>) -> CliResult {
 
 pub fn count_paths_for_bench(paths: &[PathBuf]) -> BenchCountReport {
     let report = count_paths(paths);
-    let total = total_count(&report.by_language);
-    BenchCountReport {
-        text_files: report.stats.text_files,
-        ignored_files: report.stats.ignored_files,
-        blank: total.blank,
-        comment: total.comment,
-        code: total.code,
-    }
+    count_summary(&report)
+}
+
+pub fn count_git_diff(repo: &Path, target: &GitClocTarget<'_>) -> Result<DiffCountSummary, CliError> {
+    let report = count_git_target(repo, target)?;
+    Ok(DiffCountSummary { added: count_summary(&report.added), removed: count_summary(&report.removed) })
 }
 
 fn count_paths(paths: &[PathBuf]) -> CountReport {
@@ -122,6 +153,38 @@ fn count_paths(paths: &[PathBuf]) -> CountReport {
         },
         elapsed: start.elapsed(),
     }
+}
+
+fn count_summary(report: &CountReport) -> BenchCountReport {
+    let total = total_count(&report.by_language);
+    BenchCountReport {
+        text_files: report.stats.text_files,
+        ignored_files: report.stats.ignored_files,
+        blank: total.blank,
+        comment: total.comment,
+        code: total.code,
+    }
+}
+
+fn count_git_target(repo: &Path, target: &GitClocTarget<'_>) -> Result<DiffCountReport, CliError> {
+    match target {
+        GitClocTarget::WorktreeDiff { pathspecs } => count_git_worktree_diff(repo, pathspecs),
+    }
+}
+
+fn count_git_worktree_diff(repo: &Path, pathspecs: &[&str]) -> Result<DiffCountReport, CliError> {
+    let args = git_worktree_diff_args(pathspecs);
+    let diff = git::output(repo, &args)?;
+    Ok(count_unified_diff(diff.as_bytes()))
+}
+
+fn git_worktree_diff_args<'a>(pathspecs: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec!["diff", "--no-ext-diff", "--no-color", "HEAD"];
+    if !pathspecs.is_empty() {
+        args.push("--");
+        args.extend(pathspecs.iter().copied());
+    }
+    args
 }
 
 fn count_paths_live(paths: &[PathBuf], render_options: RenderOptions) -> io::Result<CountReport> {
@@ -630,10 +693,170 @@ fn count_file(path: &Path, syntax: Option<&'static languages::CommentSyntax>) ->
     Ok(Some(count_bytes(&bytes, syntax)))
 }
 
+fn count_unified_diff(diff: &[u8]) -> DiffCountReport {
+    let start = Instant::now();
+    let mut accumulator = DiffAccumulator::default();
+    let mut file = DiffFile::default();
+
+    for line in diff.split_inclusive(|byte| *byte == b'\n') {
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+
+        if line.starts_with(b"diff --git ") {
+            accumulator.add_file(file);
+            file = DiffFile::default();
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix(b"--- ") {
+            file.old_path = diff_path(path);
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix(b"+++ ") {
+            file.new_path = diff_path(path);
+            continue;
+        }
+
+        if line.starts_with(b"@@ ") || line.starts_with(b"@@@ ") || line.starts_with(b"\\ ") {
+            continue;
+        }
+
+        if line.starts_with(b"+++") || line.starts_with(b"---") {
+            continue;
+        }
+
+        if let Some(content) = line.strip_prefix(b"+") {
+            file.added.extend_from_slice(content);
+            file.added.push(b'\n');
+        } else if let Some(content) = line.strip_prefix(b"-") {
+            file.removed.extend_from_slice(content);
+            file.removed.push(b'\n');
+        }
+    }
+
+    accumulator.add_file(file);
+    accumulator.into_report(start.elapsed())
+}
+
+fn diff_path(path: &[u8]) -> Option<PathBuf> {
+    if path == b"/dev/null" {
+        return None;
+    }
+
+    let path = path.strip_prefix(b"a/").or_else(|| path.strip_prefix(b"b/")).unwrap_or(path);
+    let path = std::str::from_utf8(path).ok()?;
+    Some(PathBuf::from(path))
+}
+
+#[derive(Default)]
+struct DiffFile {
+    old_path: Option<PathBuf>,
+    new_path: Option<PathBuf>,
+    added: Vec<u8>,
+    removed: Vec<u8>,
+}
+
+#[derive(Default)]
+struct DiffAccumulator {
+    added: HashMap<&'static str, Count>,
+    removed: HashMap<&'static str, Count>,
+    stats: DiffStats,
+}
+
+#[derive(Default)]
+struct DiffStats {
+    added_files: u64,
+    removed_files: u64,
+    added_ignored_files: u64,
+    removed_ignored_files: u64,
+}
+
+impl DiffAccumulator {
+    fn add_file(&mut self, file: DiffFile) {
+        self.add_part(file.new_path.as_deref(), &file.added, DiffSide::Added);
+        self.add_part(file.old_path.as_deref(), &file.removed, DiffSide::Removed);
+    }
+
+    fn add_part(&mut self, path: Option<&Path>, bytes: &[u8], side: DiffSide) {
+        if bytes.is_empty() {
+            return;
+        }
+
+        let Some(path) = path else {
+            return;
+        };
+        let Some(language) = detect_language(path) else {
+            self.stats.add_ignored(side);
+            return;
+        };
+
+        let syntax = languages::comment_syntax_for_language(language);
+        let mut count = count_bytes(bytes, syntax);
+        count.files = 1;
+        match side {
+            DiffSide::Added => {
+                self.stats.added_files += 1;
+                self.added.entry(language).or_default().add(count);
+            }
+            DiffSide::Removed => {
+                self.stats.removed_files += 1;
+                self.removed.entry(language).or_default().add(count);
+            }
+        }
+    }
+
+    fn into_report(self, elapsed: Duration) -> DiffCountReport {
+        DiffCountReport {
+            added: CountReport {
+                by_language: self.added,
+                stats: DiscoveryStats { text_files: self.stats.added_files, ignored_files: self.stats.added_ignored_files },
+                elapsed,
+            },
+            removed: CountReport {
+                by_language: self.removed,
+                stats: DiscoveryStats { text_files: self.stats.removed_files, ignored_files: self.stats.removed_ignored_files },
+                elapsed,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DiffSide {
+    Added,
+    Removed,
+}
+
+impl DiffStats {
+    fn add_ignored(&mut self, side: DiffSide) {
+        match side {
+            DiffSide::Added => self.added_ignored_files += 1,
+            DiffSide::Removed => self.removed_ignored_files += 1,
+        }
+    }
+}
+
 fn print_report(report: &CountReport, options: RenderOptions) {
     for line in render_report(report, options) {
         println!("{line}");
     }
+}
+
+fn print_diff_report(report: &DiffCountReport, options: RenderOptions) {
+    for line in render_diff_report(report, options) {
+        println!("{line}");
+    }
+}
+
+fn render_diff_report(report: &DiffCountReport, options: RenderOptions) -> Vec<String> {
+    let mut lines = Vec::new();
+    lines.push("Added:".to_string());
+    lines.extend(render_report(&report.added, options));
+    lines.push(String::new());
+    lines.push("Removed:".to_string());
+    lines.extend(render_report(&report.removed, options));
+    lines
 }
 
 fn render_report(report: &CountReport, options: RenderOptions) -> Vec<String> {
@@ -912,6 +1135,84 @@ mod tests {
         );
 
         assert_eq!(count, Count { files: 0, blank: 1, comment: 4, code: 3 });
+    }
+
+    #[test]
+    fn counts_added_and_removed_lines_from_unified_diff() {
+        let report = count_unified_diff(
+            br#"diff --git a/src/main.rs b/src/main.rs
+index 1111111..2222222 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,4 +1,5 @@
+-// old header
++// new header
+ fn main() {
+-    old_call();
++    new_call();
++
+ }
+"#,
+        );
+
+        let added = report.added.by_language.get("Rust").copied().unwrap_or_default();
+        let removed = report.removed.by_language.get("Rust").copied().unwrap_or_default();
+
+        assert_eq!(added, Count { files: 1, blank: 1, comment: 1, code: 1 });
+        assert_eq!(removed, Count { files: 1, blank: 0, comment: 1, code: 1 });
+        assert_eq!(report.added.stats.text_files, 1);
+        assert_eq!(report.removed.stats.text_files, 1);
+    }
+
+    #[test]
+    fn worktree_diff_args_count_staged_and_unstaged_changes() {
+        assert_eq!(git_worktree_diff_args(&[]), vec!["diff", "--no-ext-diff", "--no-color", "HEAD"]);
+        assert_eq!(git_worktree_diff_args(&["src", "tests"]), vec!["diff", "--no-ext-diff", "--no-color", "HEAD", "--", "src", "tests"]);
+    }
+
+    #[test]
+    fn counts_created_and_deleted_files_from_unified_diff() {
+        let report = count_unified_diff(
+            br#"diff --git a/src/new.rs b/src/new.rs
+new file mode 100644
+--- /dev/null
++++ b/src/new.rs
+@@ -0,0 +1,2 @@
++fn new() {}
++// comment
+diff --git a/src/old.rs b/src/old.rs
+deleted file mode 100644
+--- a/src/old.rs
++++ /dev/null
+@@ -1,2 +0,0 @@
+-fn old() {}
+-
+"#,
+        );
+
+        let added = report.added.by_language.get("Rust").copied().unwrap_or_default();
+        let removed = report.removed.by_language.get("Rust").copied().unwrap_or_default();
+
+        assert_eq!(added, Count { files: 1, blank: 0, comment: 1, code: 1 });
+        assert_eq!(removed, Count { files: 1, blank: 1, comment: 0, code: 1 });
+    }
+
+    #[test]
+    fn ignores_unknown_files_in_unified_diff() {
+        let report = count_unified_diff(
+            br#"diff --git a/file.unknown-kind b/file.unknown-kind
+--- a/file.unknown-kind
++++ b/file.unknown-kind
+@@ -1 +1 @@
+-old
++new
+"#,
+        );
+
+        assert!(report.added.by_language.is_empty());
+        assert!(report.removed.by_language.is_empty());
+        assert_eq!(report.added.stats.ignored_files, 1);
+        assert_eq!(report.removed.stats.ignored_files, 1);
     }
 
     #[test]
