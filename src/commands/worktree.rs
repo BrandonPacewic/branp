@@ -252,6 +252,11 @@ fn remove(gctx: &mut GlobalContext, repo: &Repo, name: &str, force: bool, delete
     }
 
     let branch = git::current_branch(&target)?;
+    if delete_branch {
+        if let Some(branch) = &branch {
+            preflight_branch_delete(&repo.base, branch, force)?;
+        }
+    }
     let target_has_submodules = has_submodules(&target);
     let confirmed_lossy_remove = confirm_lossy_remove(gctx, &target)?;
     deinit_submodules(gctx, &target)?;
@@ -914,6 +919,18 @@ fn has_submodules(repo: &Path) -> bool {
     repo.join(".gitmodules").is_file()
 }
 
+fn preflight_branch_delete(repo: &Path, branch: &str, force: bool) -> CliResult {
+    if force || !git::local_branch_exists(repo, branch)? || git::local_branch_merged_for_delete(repo, branch)? {
+        return Ok(());
+    }
+
+    Err(CliError::from(branch_delete_preflight_message(branch)))
+}
+
+fn branch_delete_preflight_message(branch: &str) -> String {
+    format!("local branch `{branch}` is not fully merged; pass --force to delete it anyway or --keep-branch to remove only the worktree")
+}
+
 fn worktree_remove_args(target: &str, force: bool, confirmed_lossy_remove: bool, has_submodules: bool) -> Vec<&str> {
     let mut args = vec!["worktree", "remove"];
     if force || confirmed_lossy_remove || has_submodules {
@@ -956,5 +973,13 @@ mod tests {
         assert_eq!(worktree_remove_args("/tmp/example", false, false, true), vec!["worktree", "remove", "--force", "/tmp/example"]);
         assert_eq!(worktree_remove_args("/tmp/example", false, true, false), vec!["worktree", "remove", "--force", "/tmp/example"]);
         assert_eq!(worktree_remove_args("/tmp/example", true, false, false), vec!["worktree", "remove", "--force", "/tmp/example"]);
+    }
+
+    #[test]
+    fn branch_delete_preflight_error_explains_choices() {
+        assert_eq!(
+            branch_delete_preflight_message("feature"),
+            "local branch `feature` is not fully merged; pass --force to delete it anyway or --keep-branch to remove only the worktree"
+        );
     }
 }
