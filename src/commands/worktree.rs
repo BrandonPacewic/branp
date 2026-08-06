@@ -252,15 +252,12 @@ fn remove(gctx: &mut GlobalContext, repo: &Repo, name: &str, force: bool, delete
     }
 
     let branch = git::current_branch(&target)?;
+    let target_has_submodules = has_submodules(&target);
     let confirmed_lossy_remove = confirm_lossy_remove(gctx, &target)?;
     deinit_submodules(gctx, &target)?;
 
-    let mut remove_args = vec!["worktree", "remove"];
-    if force || confirmed_lossy_remove {
-        remove_args.push("--force");
-    }
     let target_arg = path_arg(&target);
-    remove_args.push(target_arg.as_str());
+    let remove_args = worktree_remove_args(target_arg.as_str(), force, confirmed_lossy_remove, target_has_submodules);
     git::run(&repo.base, &remove_args)?;
     git::run(&repo.base, &["worktree", "prune"])?;
 
@@ -812,7 +809,7 @@ fn confirm_lossy_remove(gctx: &mut GlobalContext, repo: &Path) -> Result<bool, C
         return Ok(false);
     }
 
-    gctx.shell().warn(format!("removing this worktree will lose unstaged changes in {}:", repo.display()));
+    gctx.shell().warn(format!("removing this worktree will lose local changes in {}:", repo.display()));
     for change in changes {
         gctx.shell().warn(format!("  {change}"));
     }
@@ -879,7 +876,7 @@ fn collect_status_changes(repo: &Path, prefix: Option<&str>) -> Result<Vec<Strin
 }
 
 fn is_lossy_status(line: &str) -> bool {
-    line.starts_with("??") || line.chars().nth(1).is_some_and(|status| status != ' ')
+    line.starts_with("??") || line.get(..2).unwrap_or("").chars().any(|status| status != ' ')
 }
 
 fn format_status_line(line: &str, prefix: Option<&str>) -> String {
@@ -917,6 +914,15 @@ fn has_submodules(repo: &Path) -> bool {
     repo.join(".gitmodules").is_file()
 }
 
+fn worktree_remove_args(target: &str, force: bool, confirmed_lossy_remove: bool, has_submodules: bool) -> Vec<&str> {
+    let mut args = vec!["worktree", "remove"];
+    if force || confirmed_lossy_remove || has_submodules {
+        args.push("--force");
+    }
+    args.push(target);
+    args
+}
+
 fn required<'a>(args: &'a ArgMatches, name: &str) -> Result<&'a str, CliError> {
     args.get_one::<String>(name).map(String::as_str).ok_or_else(|| CliError::from(format!("missing required argument `{name}`")))
 }
@@ -929,4 +935,26 @@ fn required_many<'a>(args: &'a ArgMatches, name: &str) -> Result<Vec<&'a str>, C
 
 fn path_arg(path: &Path) -> String {
     path.to_string_lossy().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn staged_changes_are_lossy_for_worktree_removal() {
+        assert!(is_lossy_status("M  src/main.rs"));
+        assert!(is_lossy_status("A  src/main.rs"));
+        assert!(is_lossy_status(" M src/main.rs"));
+        assert!(is_lossy_status("?? scratch.txt"));
+        assert!(!is_lossy_status("   clean-looking"));
+    }
+
+    #[test]
+    fn submodules_force_git_worktree_remove_after_preflight() {
+        assert_eq!(worktree_remove_args("/tmp/example", false, false, false), vec!["worktree", "remove", "/tmp/example"]);
+        assert_eq!(worktree_remove_args("/tmp/example", false, false, true), vec!["worktree", "remove", "--force", "/tmp/example"]);
+        assert_eq!(worktree_remove_args("/tmp/example", false, true, false), vec!["worktree", "remove", "--force", "/tmp/example"]);
+        assert_eq!(worktree_remove_args("/tmp/example", true, false, false), vec!["worktree", "remove", "--force", "/tmp/example"]);
+    }
 }
