@@ -43,6 +43,17 @@ pub fn remote_branches(repo: &Path, remote: &str) -> Result<HashSet<String>, Cli
         .collect())
 }
 
+pub fn local_branch_merged_for_delete(repo: &Path, branch: &str) -> Result<bool, CliError> {
+    let upstream = branch_upstream(repo, branch);
+    let merge_target = upstream.as_deref().unwrap_or("HEAD");
+
+    status(repo, &["merge-base", "--is-ancestor", branch, merge_target])
+}
+
+fn branch_upstream(repo: &Path, branch: &str) -> Option<String> {
+    output(repo, &["rev-parse", "--abbrev-ref", &format!("{branch}@{{upstream}}")]).ok().and_then(|value| non_empty_trimmed(&value))
+}
+
 pub fn default_branch(repo: &Path, remote: &str) -> Result<String, CliError> {
     choose_default_branch(
         local_config_value(repo, "branp.worktree.defaultBranch"),
