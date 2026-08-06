@@ -52,6 +52,11 @@ pub fn command() -> Command {
                 ),
         )
         .subcommand(
+            Command::new("default-branch")
+                .about("Print the default branch branp would use for this repo")
+                .arg(Arg::new("remote").short('r').long("remote").help("Git remote to use").default_value("origin")),
+        )
+        .subcommand(
             Command::new("ignore")
                 .about("Add repo-local ignore patterns without modifying .gitignore")
                 .arg(Arg::new("patterns").help("Paths or patterns to ignore locally").num_args(1..).value_name("PATH|PATTERN"))
@@ -94,6 +99,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
         Some(("prs", sub)) => prs(gctx, sub),
         Some(("check", sub)) => check(gctx, sub),
         Some(("fork", sub)) => fork(gctx, sub),
+        Some(("default-branch", sub)) => default_branch(gctx, sub),
         Some(("ignore", sub)) => ignore(gctx, sub),
         Some(("open", sub)) => open(gctx, sub),
         _ => Err(CliError::from("no `git` subcommand provided")),
@@ -126,6 +132,11 @@ fn fork(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
         branch: args.get_one::<String>("branch").map(String::as_str),
     };
     ops::fork(gctx, &options)
+}
+
+fn default_branch(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
+    let remote = args.get_one::<String>("remote").unwrap();
+    ops::default_branch(gctx, remote)
 }
 
 fn ignore(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {

@@ -97,7 +97,7 @@ pub fn fork(gctx: &mut GlobalContext, options: &ForkOptions<'_>) -> CliResult {
 
     let branch = match options.branch {
         Some(branch) => branch.to_string(),
-        None => default_branch(gctx, options.remote)?,
+        None => crate::utils::git::default_branch(gctx.cwd(), options.remote)?,
     };
 
     switch_to_branch(gctx, options.remote, &branch)?;
@@ -107,6 +107,12 @@ pub fn fork(gctx: &mut GlobalContext, options: &ForkOptions<'_>) -> CliResult {
     crate::utils::git::run(gctx.cwd(), &["branch", &upstream_arg])?;
     gctx.shell().note(format!("`{branch}` is now tracking `{upstream}`"));
 
+    Ok(())
+}
+
+pub fn default_branch(gctx: &mut GlobalContext, remote: &str) -> CliResult {
+    let branch = crate::utils::git::default_branch(gctx.cwd(), remote)?;
+    gctx.shell().note(branch);
     Ok(())
 }
 
@@ -498,18 +504,6 @@ fn add_or_reuse_remote(gctx: &mut GlobalContext, remote: &str, url: &str) -> Cli
             Ok(())
         }
     }
-}
-
-fn default_branch(gctx: &mut GlobalContext, remote: &str) -> Result<String, CliError> {
-    let output = crate::utils::git::output(gctx.cwd(), &["remote", "show", remote])
-        .map_err(|e| CliError::from(format!("failed to determine default branch for `{remote}`: {}; pass --branch", e.message)))?;
-
-    output
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("HEAD branch: "))
-        .filter(|branch| !branch.is_empty() && *branch != "(unknown)")
-        .map(str::to_string)
-        .ok_or_else(|| CliError::from(format!("failed to determine default branch for `{remote}`; pass --branch")))
 }
 
 fn switch_to_branch(gctx: &mut GlobalContext, remote: &str, branch: &str) -> CliResult {

@@ -367,34 +367,7 @@ fn sync_links(gctx: &mut GlobalContext, repo: &Repo, only_worktree: Option<&Path
 }
 
 fn default_branch(repo: &Path) -> Result<String, CliError> {
-    choose_default_branch(
-        local_config_value(repo, "init.defaultBranch"),
-        remote_head_branch(repo, "origin"),
-        git::current_branch(repo).ok().flatten(),
-    )
-}
-
-fn choose_default_branch(local_config: Option<String>, remote_head: Option<String>, current_branch: Option<String>) -> Result<String, CliError> {
-    local_config
-        .or(remote_head)
-        .or(current_branch)
-        .ok_or_else(|| CliError::from("could not determine default branch from local config, origin/HEAD, or the base worktree branch"))
-}
-
-fn local_config_value(repo: &Path, key: &str) -> Option<String> {
-    git::output(repo, &["config", "--local", "--get", key]).ok().and_then(|value| non_empty_trimmed(&value))
-}
-
-fn remote_head_branch(repo: &Path, remote: &str) -> Option<String> {
-    git::output(repo, &["symbolic-ref", "--short", &format!("refs/remotes/{remote}/HEAD")])
-        .ok()
-        .and_then(|value| value.trim().strip_prefix(&format!("{remote}/")).map(str::to_string))
-        .and_then(|branch| (!branch.is_empty()).then_some(branch))
-}
-
-fn non_empty_trimmed(value: &str) -> Option<String> {
-    let value = value.trim();
-    (!value.is_empty()).then(|| value.to_string())
+    git::default_branch(repo, "origin")
 }
 
 fn session_name_for(base: &Path, name: &str) -> String {
@@ -956,17 +929,4 @@ fn required_many<'a>(args: &'a ArgMatches, name: &str) -> Result<Vec<&'a str>, C
 
 fn path_arg(path: &Path) -> String {
     path.to_string_lossy().to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn chooses_default_branch_from_best_local_signal() {
-        assert_eq!(choose_default_branch(Some("dev".to_string()), Some("master".to_string()), Some("feature".to_string())).unwrap(), "dev");
-        assert_eq!(choose_default_branch(None, Some("dev".to_string()), Some("feature".to_string())).unwrap(), "dev");
-        assert_eq!(choose_default_branch(None, None, Some("dev".to_string())).unwrap(), "dev");
-        assert!(choose_default_branch(None, None, None).is_err());
-    }
 }
