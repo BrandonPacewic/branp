@@ -210,14 +210,13 @@ fn positional_placeholders(command: &Command) -> Vec<String> {
 
     args.sort_by_key(|arg| arg.get_index().unwrap_or(usize::MAX));
 
-    args.into_iter().map(placeholder_name).collect()
+    args.into_iter().flat_map(placeholder_names).collect()
 }
 
-fn placeholder_name(arg: &Arg) -> String {
+fn placeholder_names(arg: &Arg) -> Vec<String> {
     arg.get_value_names()
-        .and_then(|names| names.first())
-        .map(|name| name.as_str().to_ascii_lowercase())
-        .unwrap_or_else(|| arg.get_id().as_str().to_string())
+        .map(|names| names.iter().map(|name| name.as_str().to_ascii_lowercase()).collect())
+        .unwrap_or_else(|| vec![arg.get_id().as_str().to_string()])
 }
 
 fn value_options(command: &Command) -> Vec<String> {

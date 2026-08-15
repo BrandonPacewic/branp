@@ -68,6 +68,14 @@ impl GitRepo {
         command(env!("CARGO_BIN_EXE_bp")).args(args).current_dir(&self.path).stdin(Stdio::null()).output().unwrap()
     }
 
+    pub fn bp_with_env<I, S>(&self, args: I, envs: &[(&str, &str)]) -> Output
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        command(env!("CARGO_BIN_EXE_bp")).args(args).current_dir(&self.path).envs(envs.iter().copied()).stdin(Stdio::null()).output().unwrap()
+    }
+
     pub fn commit_file(&self, path: &str, contents: &str, message: &str) {
         let path = self.path.join(path);
         if let Some(parent) = path.parent() {

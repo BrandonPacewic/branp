@@ -58,9 +58,9 @@ fn path_cli() -> Command {
 
 fn new_cli() -> Command {
     Command::new("new")
-        .about("Create a sibling worktree")
-        .arg(Arg::new("name").required(true).value_name("NAME"))
-        .arg(Arg::new("branch").value_name("BRANCH"))
+        .alias("n")
+        .about("Create a named sibling worktree, or an unnamed scratch worktree")
+        .arg(Arg::new("name").num_args(0..=2).value_names(["NAME", "BRANCH"]))
         .arg(Arg::new("no-fetch").long("no-fetch").help("Do not fetch origin before creating the worktree").action(ArgAction::SetTrue))
         .arg(Arg::new("no-submodules").long("no-submodules").help("Skip submodule initialization").action(ArgAction::SetTrue))
         .arg(Arg::new("no-tmux").long("no-tmux").help("Do not start a tmux session").action(ArgAction::SetTrue))
@@ -119,9 +119,17 @@ fn path_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
 
 fn new_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let repo = ops::Repo::discover(gctx.cwd())?;
+    let values = args.get_many::<String>("name").map(|values| values.map(String::as_str).collect::<Vec<_>>()).unwrap_or_default();
+    let Some(name) = values.first().copied() else {
+        let home = gctx.home().clone();
+        return ops::scratch(
+            gctx,
+            &ops::ScratchOptions { home: &home, base: &repo.base, current: &repo.current, submodules: !args.get_flag("no-submodules") },
+        );
+    };
+
     let default_branch = repo.default_branch()?;
-    let name = required(args, "name")?;
-    let branch = args.get_one::<String>("branch").map_or(name, String::as_str);
+    let branch = values.get(1).copied().unwrap_or(name);
     ops::new(
         gctx,
         &ops::NewOptions {
@@ -238,7 +246,25 @@ mod tests {
         let matches = cli().try_get_matches_from(["worktree", "ls"]).unwrap();
         assert_eq!(matches.subcommand_name(), Some("list"));
 
+        let matches = cli().try_get_matches_from(["worktree", "n"]).unwrap();
+        assert_eq!(matches.subcommand_name(), Some("new"));
+
         let matches = cli().try_get_matches_from(["worktree", "rm", "example"]).unwrap();
         assert_eq!(matches.subcommand_name(), Some("remove"));
+    }
+
+    #[test]
+    fn worktree_new_accepts_no_positional_arguments() {
+        let matches = cli().try_get_matches_from(["worktree", "new"]).unwrap();
+        let (_, new_args) = matches.subcommand().unwrap();
+        assert!(new_args.get_many::<String>("name").is_none());
+    }
+
+    #[test]
+    fn worktree_new_preserves_name_and_branch_positionals() {
+        let matches = cli().try_get_matches_from(["worktree", "new", "example", "feature"]).unwrap();
+        let (_, new_args) = matches.subcommand().unwrap();
+        let values = new_args.get_many::<String>("name").unwrap().map(String::as_str).collect::<Vec<_>>();
+        assert_eq!(values, ["example", "feature"]);
     }
 }

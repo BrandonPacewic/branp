@@ -4,6 +4,7 @@ use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use toml_edit::{value, Array, DocumentMut, Item};
 
@@ -67,6 +68,13 @@ pub struct NewOptions<'a> {
     pub submodules: bool,
     pub tmux: bool,
     pub session_name: String,
+}
+
+pub struct ScratchOptions<'a> {
+    pub home: &'a Path,
+    pub base: &'a Path,
+    pub current: &'a Path,
+    pub submodules: bool,
 }
 
 pub struct GoneOptions<'a> {
@@ -237,6 +245,25 @@ pub fn new(gctx: &mut GlobalContext, options: &NewOptions<'_>) -> CliResult {
     }
 
     gctx.shell().note(target.display());
+    Ok(())
+}
+
+pub fn scratch(gctx: &mut GlobalContext, options: &ScratchOptions<'_>) -> CliResult {
+    let target = reserve_scratch_target(options.home)?;
+    let target_arg = path_arg(&target);
+    if let Err(error) = crate::utils::git::run(options.base, &["worktree", "add", "--detach", target_arg.as_str()]) {
+        let _ = fs::remove_dir(&target);
+        return Err(error);
+    }
+
+    if options.submodules {
+        crate::utils::git::run(&target, &["submodule", "update", "--init", "--recursive"])?;
+    }
+
+    sync(gctx, &SyncOptions { base: options.base, current: options.current, worktrees: vec![target.clone()], quiet: true, force: false })?;
+
+    gctx.shell().note(target.display());
+    enter_scratch_shell(&target)?;
     Ok(())
 }
 
@@ -1062,6 +1089,42 @@ fn target_dir(base: &Path, name: &str) -> PathBuf {
     PathBuf::from(format!("{}-{name}", base.display()))
 }
 
+fn scratch_dir(home: &Path) -> PathBuf {
+    home.join(".bp/worktrees")
+}
+
+fn reserve_scratch_target(home: &Path) -> Result<PathBuf, CliError> {
+    let root = scratch_dir(home);
+    fs::create_dir_all(&root)?;
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let prefix = format!("scratch-{timestamp}-{}", std::process::id());
+    reserve_scratch_target_in(&root, &prefix)
+}
+
+fn reserve_scratch_target_in(root: &Path, prefix: &str) -> Result<PathBuf, CliError> {
+    for attempt in 0..u64::MAX {
+        let name = if attempt == 0 { prefix.to_string() } else { format!("{prefix}-{attempt}") };
+        let target = root.join(name);
+        match fs::create_dir(&target) {
+            Ok(()) => return Ok(target),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    Err(CliError::from("could not allocate a scratch worktree name"))
+}
+
+fn enter_scratch_shell(target: &Path) -> CliResult {
+    let shell = std::env::var_os("SHELL").or_else(|| std::env::var_os("COMSPEC")).unwrap_or_else(|| "sh".into());
+    let status = std::process::Command::new(&shell).current_dir(target).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(CliError::from(format!("scratch shell exited unsuccessfully: {}", shell.to_string_lossy())))
+    }
+}
+
 fn worktrees(repo: &Path) -> Result<Vec<Worktree>, CliError> {
     let output = crate::utils::git::output(repo, &["worktree", "list", "--porcelain"])?;
     let mut items = Vec::new();
@@ -1124,6 +1187,23 @@ linked = ["z.env", "./a.env", "z.env"]
     #[test]
     fn target_dir_appends_worktree_name_to_base_path() {
         assert_eq!(target_dir(Path::new("/tmp/example"), "feature"), PathBuf::from("/tmp/example-feature"));
+    }
+
+    #[test]
+    fn scratch_target_uses_a_dedicated_user_directory() {
+        assert_eq!(scratch_dir(Path::new("/tmp/home")), PathBuf::from("/tmp/home/.bp/worktrees"));
+    }
+
+    #[test]
+    fn scratch_target_reservation_skips_collisions() {
+        let root = std::env::temp_dir().join(format!("branp-scratch-reservation-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("scratch-test")).unwrap();
+
+        let target = reserve_scratch_target_in(&root, "scratch-test").unwrap();
+        assert_eq!(target, root.join("scratch-test-1"));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
