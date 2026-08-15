@@ -13,6 +13,27 @@ pub struct PathOptions<'a> {
     pub name: &'a str,
 }
 
+pub struct TrackOptions<'a> {
+    pub base: &'a Path,
+    pub current: &'a Path,
+    pub paths: Vec<&'a str>,
+    pub worktrees: Vec<PathBuf>,
+    pub force: bool,
+}
+
+pub struct LinksOptions<'a> {
+    pub base: &'a Path,
+    pub current: &'a Path,
+}
+
+pub struct SyncOptions<'a> {
+    pub base: &'a Path,
+    pub current: &'a Path,
+    pub worktrees: Vec<PathBuf>,
+    pub quiet: bool,
+    pub force: bool,
+}
+
 pub fn path(gctx: &mut GlobalContext, options: &PathOptions<'_>) -> CliResult {
     let path = if options.name == options.default_branch { options.base.to_path_buf() } else { target_dir(options.base, options.name) };
     gctx.shell().note(path.display());
@@ -21,6 +42,31 @@ pub fn path(gctx: &mut GlobalContext, options: &PathOptions<'_>) -> CliResult {
 
 pub fn prune(repo: &Path) -> CliResult {
     crate::utils::git::run(repo, &["worktree", "prune"])?;
+    Ok(())
+}
+
+pub fn track(gctx: &mut GlobalContext, options: &TrackOptions<'_>) -> CliResult {
+    let tracked = LinkStore::new(options.base, options.current).track(&options.paths, &options.worktrees, options.force)?;
+
+    for rel in tracked {
+        gctx.shell().note(format!("linked {}", rel.display()));
+    }
+    Ok(())
+}
+
+pub fn links(gctx: &mut GlobalContext, options: &LinksOptions<'_>) -> CliResult {
+    for rel in LinkStore::new(options.base, options.current).linked_paths()? {
+        gctx.shell().note(rel.display());
+    }
+    Ok(())
+}
+
+pub fn sync(gctx: &mut GlobalContext, options: &SyncOptions<'_>) -> CliResult {
+    LinkStore::new(options.base, options.current).sync(&options.worktrees, options.force)?;
+
+    if !options.quiet {
+        gctx.shell().note("worktree links synced");
+    }
     Ok(())
 }
 

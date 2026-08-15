@@ -10,7 +10,7 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::context::GlobalContext;
 use crate::errors::{CliError, CliResult};
-use crate::ops::worktree::{self as ops, LinkStore};
+use crate::ops::worktree as ops;
 use crate::utils::git;
 
 pub fn cli() -> Command {
@@ -141,15 +141,27 @@ fn gone_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliRes
 }
 
 fn track_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
-    track_links(gctx, repo, required_many(args, "path")?, args.get_flag("force"))
+    ops::track(
+        gctx,
+        &ops::TrackOptions {
+            base: &repo.base,
+            current: &repo.current,
+            paths: required_many(args, "path")?,
+            worktrees: worktree_paths(repo)?,
+            force: args.get_flag("force"),
+        },
+    )
 }
 
 fn links_exec(gctx: &mut GlobalContext, repo: &Repo, _args: &ArgMatches) -> CliResult {
-    list_links(gctx, repo)
+    ops::links(gctx, &ops::LinksOptions { base: &repo.base, current: &repo.current })
 }
 
 fn sync_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
-    sync_links(gctx, repo, None, args.get_flag("force"))
+    ops::sync(
+        gctx,
+        &ops::SyncOptions { base: &repo.base, current: &repo.current, worktrees: worktree_paths(repo)?, quiet: false, force: args.get_flag("force") },
+    )
 }
 
 fn list(gctx: &mut GlobalContext, repo: &Repo, pr_lookup: bool) -> CliResult {
@@ -288,7 +300,7 @@ fn create(gctx: &mut GlobalContext, repo: &Repo, name: &str, branch: &str, fetch
         git::run(&target, &["submodule", "update", "--init", "--recursive"])?;
     }
 
-    sync_links(gctx, repo, Some(&target), false)?;
+    ops::sync(gctx, &ops::SyncOptions { base: &repo.base, current: &repo.current, worktrees: vec![target.clone()], quiet: true, force: false })?;
 
     if tmux {
         crate::utils::tmux::ensure_session(gctx, &repo.session_name(name), &target)?;
@@ -389,36 +401,6 @@ impl Repo {
     fn name_from_path(&self, path: &Path) -> Option<String> {
         name_from_worktree_path(&self.base, path)
     }
-
-    fn link_store(&self) -> LinkStore {
-        LinkStore::new(&self.base, &self.current)
-    }
-}
-
-fn track_links(gctx: &mut GlobalContext, repo: &Repo, paths: Vec<&str>, force: bool) -> CliResult {
-    let tracked = repo.link_store().track(&paths, &worktree_paths(repo)?, force)?;
-
-    for rel in tracked {
-        gctx.shell().note(format!("linked {}", rel.display()));
-    }
-    Ok(())
-}
-
-fn list_links(gctx: &mut GlobalContext, repo: &Repo) -> CliResult {
-    for rel in repo.link_store().linked_paths()? {
-        gctx.shell().note(rel.display());
-    }
-    Ok(())
-}
-
-fn sync_links(gctx: &mut GlobalContext, repo: &Repo, only_worktree: Option<&Path>, force: bool) -> CliResult {
-    let worktrees = if let Some(worktree) = only_worktree { vec![worktree.to_path_buf()] } else { worktree_paths(repo)? };
-    repo.link_store().sync(&worktrees, force)?;
-
-    if only_worktree.is_none() {
-        gctx.shell().note("worktree links synced");
-    }
-    Ok(())
 }
 
 fn default_branch(repo: &Path) -> Result<String, CliError> {
