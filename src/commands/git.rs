@@ -8,102 +8,112 @@ use crate::ops::git as ops;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
 pub fn cli() -> Command {
-    Command::new("git")
-        .about("Git-related helpers")
-        .subcommand_required(true)
-        .arg_required_else_help(true)
-        .subcommand(
-            Command::new("coauthor")
-                .about("Generate GitHub no-reply co-author lines")
-                .arg(Arg::new("usernames").help("One or more GitHub usernames").required(true).num_args(1..).value_name("USERNAME")),
-        )
-        .subcommand(
-            Command::new("prs")
-                .about("List open pull requests in this GitHub repo")
-                .arg(Arg::new("remote").short('r').long("remote").help("Git remote to use").default_value("origin")),
-        )
-        .subcommand(
-            Command::new("check")
-                .about("Monitor PR checks until the PR is merged")
-                .arg(Arg::new("target").help("Pull request number, URL, or branch; defaults to the current branch PR").value_name("PR|URL|BRANCH"))
-                .arg(
-                    Arg::new("interval")
-                        .short('i')
-                        .long("interval")
-                        .help("Refresh interval in seconds")
-                        .default_value("5")
-                        .value_parser(clap::value_parser!(u64).range(1..)),
-                )
-                .arg(
-                    Arg::new("once").long("once").help("Show the current PR status and checks without waiting for merge").action(ArgAction::SetTrue),
-                ),
-        )
-        .subcommand(
-            Command::new("fork")
-                .about("Add and track a fork remote branch for local PR edits")
-                .arg(Arg::new("remote").help("Fork remote name to add or reuse").required(true).value_name("REMOTE"))
-                .arg(Arg::new("url").help("Fork Git URL").required(true).value_name("URL"))
-                .arg(
-                    Arg::new("branch")
-                        .short('b')
-                        .long("branch")
-                        .help("Branch to switch to and track; defaults to the fork remote HEAD")
-                        .value_name("BRANCH"),
-                ),
-        )
-        .subcommand(
-            Command::new("default-branch")
-                .about("Print the default branch branp would use for this repo")
-                .arg(Arg::new("remote").short('r').long("remote").help("Git remote to use").default_value("origin")),
-        )
-        .subcommand(
-            Command::new("ignore")
-                .about("Add repo-local ignore patterns without modifying .gitignore")
-                .arg(Arg::new("patterns").help("Paths or patterns to ignore locally").num_args(1..).value_name("PATH|PATTERN"))
-                .arg(Arg::new("raw").long("raw").help("Treat arguments as literal gitignore patterns").action(ArgAction::SetTrue))
-                .arg(
-                    Arg::new("list")
-                        .long("list")
-                        .short('l')
-                        .help("List repo-local ignore patterns")
-                        .conflicts_with_all(["patterns", "remove", "raw"])
-                        .action(ArgAction::SetTrue),
-                )
-                .arg(
-                    Arg::new("remove")
-                        .long("remove")
-                        .short('r')
-                        .help("Remove matching repo-local ignore patterns")
-                        .requires("patterns")
-                        .action(ArgAction::SetTrue),
-                ),
-        )
-        .subcommand(
-            Command::new("open")
-                .about("Open this GitHub repo, issue, pull request, or commit in a browser")
-                .arg(
-                    Arg::new("pr")
-                        .help("Open the pull request for the current branch, number, or commit")
-                        .long("pr")
-                        .short('p')
-                        .action(ArgAction::SetTrue),
-                )
-                .arg(Arg::new("targets").help("Optional `pr`, issue/PR number, or commit hash").num_args(0..=2).value_name("TARGET"))
-                .arg(Arg::new("remote").short('r').long("remote").help("Git remote to use").default_value("origin")),
-        )
+    Command::new("git").about("Git-related helpers").subcommand_required(true).arg_required_else_help(true).subcommands(builtin())
+}
+
+type GitExec = fn(&mut GlobalContext, &ArgMatches) -> CliResult;
+
+fn builtin() -> Vec<Command> {
+    vec![coauthor_cli(), prs_cli(), check_cli(), fork_cli(), default_branch_cli(), ignore_cli(), open_cli()]
+}
+
+fn builtin_exec(cmd: &str) -> Option<GitExec> {
+    let exec = match cmd {
+        "coauthor" => coauthor,
+        "prs" => prs,
+        "check" => check,
+        "fork" => fork,
+        "default-branch" => default_branch,
+        "ignore" => ignore,
+        "open" => open,
+        _ => return None,
+    };
+
+    Some(exec)
 }
 
 pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
-    match args.subcommand() {
-        Some(("coauthor", sub)) => coauthor(gctx, sub),
-        Some(("prs", sub)) => prs(gctx, sub),
-        Some(("check", sub)) => check(gctx, sub),
-        Some(("fork", sub)) => fork(gctx, sub),
-        Some(("default-branch", sub)) => default_branch(gctx, sub),
-        Some(("ignore", sub)) => ignore(gctx, sub),
-        Some(("open", sub)) => open(gctx, sub),
-        _ => Err(CliError::from("no `git` subcommand provided")),
+    if let Some((cmd, sub)) = args.subcommand() {
+        if let Some(exec) = builtin_exec(cmd) {
+            return exec(gctx, sub);
+        }
     }
+
+    Err(CliError::from("no `git` subcommand provided"))
+}
+
+fn coauthor_cli() -> Command {
+    Command::new("coauthor")
+        .about("Generate GitHub no-reply co-author lines")
+        .arg(Arg::new("usernames").help("One or more GitHub usernames").required(true).num_args(1..).value_name("USERNAME"))
+}
+
+fn prs_cli() -> Command {
+    Command::new("prs")
+        .about("List open pull requests in this GitHub repo")
+        .arg(Arg::new("remote").short('r').long("remote").help("Git remote to use").default_value("origin"))
+}
+
+fn check_cli() -> Command {
+    Command::new("check")
+        .about("Monitor PR checks until the PR is merged")
+        .arg(Arg::new("target").help("Pull request number, URL, or branch; defaults to the current branch PR").value_name("PR|URL|BRANCH"))
+        .arg(
+            Arg::new("interval")
+                .short('i')
+                .long("interval")
+                .help("Refresh interval in seconds")
+                .default_value("5")
+                .value_parser(clap::value_parser!(u64).range(1..)),
+        )
+        .arg(Arg::new("once").long("once").help("Show the current PR status and checks without waiting for merge").action(ArgAction::SetTrue))
+}
+
+fn fork_cli() -> Command {
+    Command::new("fork")
+        .about("Add and track a fork remote branch for local PR edits")
+        .arg(Arg::new("remote").help("Fork remote name to add or reuse").required(true).value_name("REMOTE"))
+        .arg(Arg::new("url").help("Fork Git URL").required(true).value_name("URL"))
+        .arg(
+            Arg::new("branch").short('b').long("branch").help("Branch to switch to and track; defaults to the fork remote HEAD").value_name("BRANCH"),
+        )
+}
+
+fn default_branch_cli() -> Command {
+    Command::new("default-branch")
+        .about("Print the default branch branp would use for this repo")
+        .arg(Arg::new("remote").short('r').long("remote").help("Git remote to use").default_value("origin"))
+}
+
+fn ignore_cli() -> Command {
+    Command::new("ignore")
+        .about("Add repo-local ignore patterns without modifying .gitignore")
+        .arg(Arg::new("patterns").help("Paths or patterns to ignore locally").num_args(1..).value_name("PATH|PATTERN"))
+        .arg(Arg::new("raw").long("raw").help("Treat arguments as literal gitignore patterns").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("list")
+                .long("list")
+                .short('l')
+                .help("List repo-local ignore patterns")
+                .conflicts_with_all(["patterns", "remove", "raw"])
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("remove")
+                .long("remove")
+                .short('r')
+                .help("Remove matching repo-local ignore patterns")
+                .requires("patterns")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+fn open_cli() -> Command {
+    Command::new("open")
+        .about("Open this GitHub repo, issue, pull request, or commit in a browser")
+        .arg(Arg::new("pr").help("Open the pull request for the current branch, number, or commit").long("pr").short('p').action(ArgAction::SetTrue))
+        .arg(Arg::new("targets").help("Optional `pr`, issue/PR number, or commit hash").num_args(0..=2).value_name("TARGET"))
+        .arg(Arg::new("remote").short('r').long("remote").help("Git remote to use").default_value("origin"))
 }
 
 fn coauthor(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
@@ -157,4 +167,21 @@ fn open(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
 
 fn required<'a>(args: &'a ArgMatches, name: &str) -> Result<&'a str, CliError> {
     args.get_one::<String>(name).map(String::as_str).ok_or_else(|| CliError::from(format!("missing required argument `{name}`")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_subcommands_have_exec_handlers() {
+        for command in builtin() {
+            assert!(builtin_exec(command.get_name()).is_some(), "{} is missing an exec handler", command.get_name());
+        }
+    }
+
+    #[test]
+    fn git_cli_definition_is_valid() {
+        cli().debug_assert();
+    }
 }
