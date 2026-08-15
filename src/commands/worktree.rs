@@ -10,7 +10,7 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::context::GlobalContext;
 use crate::errors::{CliError, CliResult};
-use crate::ops::worktree::LinkStore;
+use crate::ops::worktree::{self as ops, LinkStore};
 use crate::utils::git;
 
 pub fn cli() -> Command {
@@ -119,10 +119,7 @@ fn list_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliRes
 }
 
 fn path_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
-    let name = required(args, "name")?;
-    let path = if name == repo.default_branch { repo.base.clone() } else { repo.target_dir(name) };
-    gctx.shell().note(path.display());
-    Ok(())
+    ops::path(gctx, &ops::PathOptions { base: &repo.base, default_branch: &repo.default_branch, name: required(args, "name")? })
 }
 
 fn new_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
@@ -136,8 +133,7 @@ fn remove_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliR
 }
 
 fn prune_exec(_gctx: &mut GlobalContext, repo: &Repo, _args: &ArgMatches) -> CliResult {
-    git::run(&repo.base, &["worktree", "prune"])?;
-    Ok(())
+    ops::prune(&repo.base)
 }
 
 fn gone_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {

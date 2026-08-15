@@ -4,7 +4,25 @@ use std::path::{Component, Path, PathBuf};
 use toml_edit::{value, Array, DocumentMut, Item};
 
 use crate::config::RepoConfig;
+use crate::context::GlobalContext;
 use crate::errors::{CliError, CliResult};
+
+pub struct PathOptions<'a> {
+    pub base: &'a Path,
+    pub default_branch: &'a str,
+    pub name: &'a str,
+}
+
+pub fn path(gctx: &mut GlobalContext, options: &PathOptions<'_>) -> CliResult {
+    let path = if options.name == options.default_branch { options.base.to_path_buf() } else { target_dir(options.base, options.name) };
+    gctx.shell().note(path.display());
+    Ok(())
+}
+
+pub fn prune(repo: &Path) -> CliResult {
+    crate::utils::git::run(repo, &["worktree", "prune"])?;
+    Ok(())
+}
 
 pub struct LinkStore {
     config: RepoConfig,
@@ -154,6 +172,10 @@ fn path_to_config_string(path: &Path) -> Result<String, CliError> {
     path.to_str().map(str::to_string).ok_or_else(|| CliError::from(format!("linked path must be valid UTF-8: {}", path.display())))
 }
 
+fn target_dir(base: &Path, name: &str) -> PathBuf {
+    PathBuf::from(format!("{}-{name}", base.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,5 +200,10 @@ linked = ["z.env", "./a.env", "z.env"]
         .unwrap();
 
         assert_eq!(linked_paths_from_document(&document).unwrap(), vec![PathBuf::from("a.env"), PathBuf::from("z.env")]);
+    }
+
+    #[test]
+    fn target_dir_appends_worktree_name_to_base_path() {
+        assert_eq!(target_dir(Path::new("/tmp/example"), "feature"), PathBuf::from("/tmp/example-feature"));
     }
 }
