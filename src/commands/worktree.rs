@@ -160,7 +160,16 @@ fn prune_exec(_gctx: &mut GlobalContext, repo: &Repo, _args: &ArgMatches) -> Cli
 }
 
 fn gone_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
-    remove_gone(gctx, repo, args.get_flag("dry-run"), args.get_flag("force"), !args.get_flag("no-tmux"))
+    ops::gone(
+        gctx,
+        &ops::GoneOptions {
+            base: &repo.base,
+            default_branch: &repo.default_branch,
+            dry_run: args.get_flag("dry-run"),
+            force: args.get_flag("force"),
+            tmux: !args.get_flag("no-tmux"),
+        },
+    )
 }
 
 fn track_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
@@ -192,7 +201,7 @@ fn list(gctx: &mut GlobalContext, repo: &Repo, pr_lookup: bool) -> CliResult {
         return Ok(());
     }
 
-    let worktrees = worktrees(&repo.base)?;
+    let worktrees = ops::worktrees(&repo.base)?;
     let path_root = common_parent(&worktrees);
     let verbose = gctx.is_verbose();
     if !crate::utils::terminal::supports_dynamic_lines() {
@@ -209,7 +218,7 @@ fn list(gctx: &mut GlobalContext, repo: &Repo, pr_lookup: bool) -> CliResult {
     render_worktree_rows_dynamic(repo, worktrees, &path_root, verbose, pr_lookup)
 }
 
-fn resolve_worktree_rows(repo: &Repo, worktrees: &[Worktree], path_root: &Path, verbose: bool) -> Result<Vec<WorktreeRow>, CliError> {
+fn resolve_worktree_rows(repo: &Repo, worktrees: &[ops::Worktree], path_root: &Path, verbose: bool) -> Result<Vec<WorktreeRow>, CliError> {
     let remote_branches = git::remote_branches(&repo.base, "origin").unwrap_or_default();
     let tmux_sessions: HashSet<_> = crate::utils::tmux::sessions().unwrap_or_default().into_iter().collect();
     let mut rows: Vec<_> = worktrees.iter().map(|worktree| WorktreeRow::from_worktree(repo, worktree, path_root, verbose)).collect();
@@ -238,7 +247,7 @@ fn resolve_worktree_rows(repo: &Repo, worktrees: &[Worktree], path_root: &Path, 
     Ok(rows)
 }
 
-fn render_worktree_rows_dynamic(repo: &Repo, worktrees: Vec<Worktree>, path_root: &Path, verbose: bool, pr_lookup: bool) -> CliResult {
+fn render_worktree_rows_dynamic(repo: &Repo, worktrees: Vec<ops::Worktree>, path_root: &Path, verbose: bool, pr_lookup: bool) -> CliResult {
     let rows: Vec<_> = worktrees.iter().map(|worktree| WorktreeRow::from_worktree(repo, worktree, path_root, verbose)).collect();
     let (tx, rx) = mpsc::channel();
     let mut pending = 0;
@@ -297,40 +306,6 @@ fn render_worktree_rows_dynamic(repo: &Repo, worktrees: Vec<Worktree>, path_root
     Ok(())
 }
 
-fn remove_gone(gctx: &mut GlobalContext, repo: &Repo, dry_run: bool, force: bool, tmux: bool) -> CliResult {
-    git::run(&repo.base, &["fetch", "--prune"])?;
-    let worktrees = worktrees(&repo.base)?;
-
-    for worktree in worktrees {
-        if worktree.path == repo.base {
-            continue;
-        }
-
-        let Some(branch) = worktree.branch else {
-            continue;
-        };
-        if branch == repo.default_branch || git::remote_branch_exists(&repo.base, "origin", &branch)? {
-            continue;
-        }
-
-        let Some(name) = repo.name_from_path(&worktree.path) else {
-            gctx.shell().warn(format!("skipping non-sibling worktree for branch `{branch}`: {}", worktree.path.display()));
-            continue;
-        };
-
-        if dry_run {
-            gctx.shell().note(format!("{name} ({branch})"));
-        } else {
-            ops::remove(
-                gctx,
-                &ops::RemoveOptions { base: &repo.base, name: &name, force, delete_branch: true, tmux, session_name: repo.session_name(&name) },
-            )?;
-        }
-    }
-
-    Ok(())
-}
-
 struct Repo {
     base: PathBuf,
     current: PathBuf,
@@ -340,18 +315,14 @@ struct Repo {
 impl Repo {
     fn discover(cwd: &Path) -> Result<Self, CliError> {
         let root = PathBuf::from(git::output(cwd, &["rev-parse", "--show-toplevel"])?.trim());
-        let base = worktrees(&root)?.into_iter().next().map(|w| w.path).ok_or("could not determine base worktree")?;
+        let base = ops::worktrees(&root)?.into_iter().next().map(|w| w.path).ok_or("could not determine base worktree")?;
         let default_branch = default_branch(&base)?;
 
         Ok(Self { base, current: root, default_branch })
     }
 
     fn session_name(&self, name: &str) -> String {
-        session_name_for(&self.base, name)
-    }
-
-    fn name_from_path(&self, path: &Path) -> Option<String> {
-        name_from_worktree_path(&self.base, path)
+        ops::session_name_for(&self.base, name)
     }
 }
 
@@ -359,47 +330,8 @@ fn default_branch(repo: &Path) -> Result<String, CliError> {
     git::default_branch(repo, "origin")
 }
 
-fn session_name_for(base: &Path, name: &str) -> String {
-    let repo_name = base.file_name().and_then(|name| name.to_str()).unwrap_or("worktree");
-    format!("{repo_name}-{name}")
-}
-
-fn name_from_worktree_path(base: &Path, path: &Path) -> Option<String> {
-    path.to_str()?.strip_prefix(&format!("{}-", base.display())).map(str::to_string)
-}
-
-struct Worktree {
-    path: PathBuf,
-    head: Option<String>,
-    branch: Option<String>,
-}
-
-fn worktrees(repo: &Path) -> Result<Vec<Worktree>, CliError> {
-    let output = git::output(repo, &["worktree", "list", "--porcelain"])?;
-    let mut items = Vec::new();
-    let mut path = None;
-    let mut head = None;
-    let mut branch = None;
-
-    for line in output.lines().chain(std::iter::once("")) {
-        if line.is_empty() {
-            if let Some(path) = path.take() {
-                items.push(Worktree { path, head: head.take(), branch: branch.take() });
-            }
-        } else if let Some(value) = line.strip_prefix("worktree ") {
-            path = Some(PathBuf::from(value));
-        } else if let Some(value) = line.strip_prefix("HEAD ") {
-            head = Some(value.to_string());
-        } else if let Some(value) = line.strip_prefix("branch refs/heads/") {
-            branch = Some(value.to_string());
-        }
-    }
-
-    Ok(items)
-}
-
 fn worktree_paths(repo: &Repo) -> Result<Vec<PathBuf>, CliError> {
-    Ok(worktrees(&repo.base)?.into_iter().map(|worktree| worktree.path).collect())
+    Ok(ops::worktrees(&repo.base)?.into_iter().map(|worktree| worktree.path).collect())
 }
 
 #[derive(Clone, Default)]
@@ -455,7 +387,7 @@ struct WorktreeRow {
 }
 
 impl WorktreeRow {
-    fn from_worktree(repo: &Repo, worktree: &Worktree, path_root: &Path, verbose: bool) -> Self {
+    fn from_worktree(repo: &Repo, worktree: &ops::Worktree, path_root: &Path, verbose: bool) -> Self {
         let branch = worktree.branch.as_deref().unwrap_or("detached");
         Self {
             path: display_path(&worktree.path, path_root),
@@ -484,8 +416,8 @@ impl WorktreeRow {
     }
 
     fn apply_tmux_sessions(&mut self, tmux_sessions: &HashSet<String>) {
-        self.tmux_session = name_from_worktree_path(&self.source_base, &self.source_path)
-            .map(|name| session_name_for(&self.source_base, &name))
+        self.tmux_session = ops::name_from_worktree_path(&self.source_base, &self.source_path)
+            .map(|name| ops::session_name_for(&self.source_base, &name))
             .filter(|session| tmux_sessions.contains(session));
     }
 
@@ -745,7 +677,7 @@ fn color_badge_link(value: &str, width: usize, color: BadgeColor, url: Option<&s
     }
 }
 
-fn common_parent(worktrees: &[Worktree]) -> PathBuf {
+fn common_parent(worktrees: &[ops::Worktree]) -> PathBuf {
     let Some(first) = worktrees.first() else {
         return PathBuf::new();
     };

@@ -56,6 +56,20 @@ pub struct NewOptions<'a> {
     pub session_name: String,
 }
 
+pub struct GoneOptions<'a> {
+    pub base: &'a Path,
+    pub default_branch: &'a str,
+    pub dry_run: bool,
+    pub force: bool,
+    pub tmux: bool,
+}
+
+pub struct Worktree {
+    pub path: PathBuf,
+    pub head: Option<String>,
+    pub branch: Option<String>,
+}
+
 pub fn path(gctx: &mut GlobalContext, options: &PathOptions<'_>) -> CliResult {
     let path = if options.name == options.default_branch { options.base.to_path_buf() } else { target_dir(options.base, options.name) };
     gctx.shell().note(path.display());
@@ -162,6 +176,47 @@ pub fn new(gctx: &mut GlobalContext, options: &NewOptions<'_>) -> CliResult {
     }
 
     gctx.shell().note(target.display());
+    Ok(())
+}
+
+pub fn gone(gctx: &mut GlobalContext, options: &GoneOptions<'_>) -> CliResult {
+    crate::utils::git::run(options.base, &["fetch", "--prune"])?;
+    let worktrees = worktrees(options.base)?;
+
+    for worktree in worktrees {
+        if worktree.path == options.base {
+            continue;
+        }
+
+        let Some(branch) = worktree.branch else {
+            continue;
+        };
+        if branch == options.default_branch || crate::utils::git::remote_branch_exists(options.base, "origin", &branch)? {
+            continue;
+        }
+
+        let Some(name) = name_from_worktree_path(options.base, &worktree.path) else {
+            gctx.shell().warn(format!("skipping non-sibling worktree for branch `{branch}`: {}", worktree.path.display()));
+            continue;
+        };
+
+        if options.dry_run {
+            gctx.shell().note(format!("{name} ({branch})"));
+        } else {
+            remove(
+                gctx,
+                &RemoveOptions {
+                    base: options.base,
+                    name: &name,
+                    force: options.force,
+                    delete_branch: true,
+                    tmux: options.tmux,
+                    session_name: session_name_for(options.base, &name),
+                },
+            )?;
+        }
+    }
+
     Ok(())
 }
 
@@ -455,6 +510,39 @@ fn confirm_default_source_branch(gctx: &mut GlobalContext, options: &NewOptions<
 
 fn target_dir(base: &Path, name: &str) -> PathBuf {
     PathBuf::from(format!("{}-{name}", base.display()))
+}
+
+pub fn worktrees(repo: &Path) -> Result<Vec<Worktree>, CliError> {
+    let output = crate::utils::git::output(repo, &["worktree", "list", "--porcelain"])?;
+    let mut items = Vec::new();
+    let mut path = None;
+    let mut head = None;
+    let mut branch = None;
+
+    for line in output.lines().chain(std::iter::once("")) {
+        if line.is_empty() {
+            if let Some(path) = path.take() {
+                items.push(Worktree { path, head: head.take(), branch: branch.take() });
+            }
+        } else if let Some(value) = line.strip_prefix("worktree ") {
+            path = Some(PathBuf::from(value));
+        } else if let Some(value) = line.strip_prefix("HEAD ") {
+            head = Some(value.to_string());
+        } else if let Some(value) = line.strip_prefix("branch refs/heads/") {
+            branch = Some(value.to_string());
+        }
+    }
+
+    Ok(items)
+}
+
+pub fn session_name_for(base: &Path, name: &str) -> String {
+    let repo_name = base.file_name().and_then(|name| name.to_str()).unwrap_or("worktree");
+    format!("{repo_name}-{name}")
+}
+
+pub fn name_from_worktree_path(base: &Path, path: &Path) -> Option<String> {
+    path.to_str()?.strip_prefix(&format!("{}-", base.display())).map(str::to_string)
 }
 
 #[cfg(test)]
