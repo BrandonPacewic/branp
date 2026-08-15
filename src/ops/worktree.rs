@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
 use toml_edit::{value, Array, DocumentMut, Item};
@@ -29,6 +29,9 @@ pub struct ListOptions<'a> {
 
 pub struct PruneOptions<'a> {
     pub base: &'a Path,
+    pub home: &'a Path,
+    pub confirm: bool,
+    pub older_than: Option<Duration>,
 }
 
 pub struct TrackOptions<'a> {
@@ -120,6 +123,12 @@ struct ScratchRemoveInspection {
     in_use: crate::utils::in_use::InUseInspection,
 }
 
+struct PruneScratchCandidate {
+    path: PathBuf,
+    size: u64,
+    reservation: ScratchReservation,
+}
+
 pub struct Repo {
     pub base: PathBuf,
     pub current: PathBuf,
@@ -152,8 +161,204 @@ pub fn path(gctx: &mut GlobalContext, options: &PathOptions<'_>) -> CliResult {
     Ok(())
 }
 
-pub fn prune(_gctx: &mut GlobalContext, options: &PruneOptions<'_>) -> CliResult {
+pub fn prune(gctx: &mut GlobalContext, options: &PruneOptions<'_>) -> CliResult {
+    let registered = worktrees(options.base)?;
+    let scratch_root = scratch_dir(options.home).canonicalize().ok();
+    let mut candidates = Vec::new();
+    let mut skipped = 0;
+    let mut estimated_reclaimed = 0;
+
+    for worktree in &registered {
+        if same_worktree_path(&worktree.path, options.base) {
+            gctx.shell().warn(format!("skipping worktree {}: base worktree is protected", worktree.path.display()));
+            skipped += 1;
+            continue;
+        }
+
+        let Some(root) = scratch_root.as_deref() else {
+            gctx.shell().warn(format!(
+                "skipping worktree {}: named worktrees are protected; use `bp worktree remove` or `bp worktree gone`",
+                worktree.path.display()
+            ));
+            skipped += 1;
+            continue;
+        };
+
+        let path = worktree.path.canonicalize().unwrap_or_else(|_| worktree.path.clone());
+        let direct_child = path.parent() == Some(root);
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+        if !direct_child || !name.starts_with("scratch-") {
+            gctx.shell().warn(format!(
+                "skipping worktree {}: named worktrees are protected; use `bp worktree remove` or `bp worktree gone`",
+                worktree.path.display()
+            ));
+            skipped += 1;
+            continue;
+        }
+        if !worktree.path.exists() {
+            gctx.shell().warn(format!(
+                "skipping scratch worktree {}: registered path is missing; use `--confirm` to prune stale Git metadata",
+                worktree.path.display()
+            ));
+            skipped += 1;
+            continue;
+        }
+        if worktree.head.is_none() {
+            gctx.shell().warn(format!("skipping scratch worktree {}: HEAD could not be verified", worktree.path.display()));
+            skipped += 1;
+            continue;
+        }
+        if worktree.branch.is_some() {
+            gctx.shell().warn(format!("skipping scratch worktree {}: worktree is named and not detached", worktree.path.display()));
+            skipped += 1;
+            continue;
+        }
+
+        let Some(reservation) = try_reserve_scratch(root, &path)? else {
+            gctx.shell().warn(format!(
+                "skipping scratch worktree {}: short-lived lifecycle reservation is held; retry after the other operation completes",
+                path.display()
+            ));
+            skipped += 1;
+            continue;
+        };
+
+        let changes = match removal_risk_changes(&path) {
+            Ok(changes) => changes,
+            Err(error) => {
+                gctx.shell().warn(format!("skipping scratch worktree {}: could not verify cleanliness: {}", path.display(), error.message));
+                skipped += 1;
+                drop(reservation);
+                continue;
+            }
+        };
+        if !changes.is_empty() {
+            gctx.shell().warn(format!(
+                "skipping scratch worktree {}: dirty changes ({}) - use `bp worktree remove --include-dirty` for explicit destruction",
+                path.display(),
+                changes.join(", ")
+            ));
+            skipped += 1;
+            drop(reservation);
+            continue;
+        }
+
+        let session_name = name_from_worktree_path(options.base, &path)
+            .or_else(|| path.file_name().and_then(|name| name.to_str()).map(str::to_string))
+            .map(|name| session_name_for(options.base, &name));
+        let mut in_use = match crate::utils::in_use::inspect(&path, session_name.as_deref()) {
+            Ok(in_use) => in_use,
+            Err(error) => {
+                gctx.shell().warn(format!("skipping scratch worktree {}: could not verify availability: {}", path.display(), error.message));
+                skipped += 1;
+                drop(reservation);
+                continue;
+            }
+        };
+        in_use.processes.retain(|process| process.pid != std::process::id());
+        if in_use.is_in_use() {
+            gctx.shell().warn(format!(
+                "skipping scratch worktree {}: worktree is in use ({}) - stop the process or tmux session and retry",
+                path.display(),
+                in_use.reasons().join(", ")
+            ));
+            skipped += 1;
+            drop(reservation);
+            continue;
+        }
+
+        let age = match fs::metadata(&path).and_then(|metadata| metadata.modified()) {
+            Ok(modified) => SystemTime::now().duration_since(modified).unwrap_or_default(),
+            Err(error) => {
+                gctx.shell().warn(format!("skipping scratch worktree {}: could not verify age: {}", path.display(), error));
+                skipped += 1;
+                drop(reservation);
+                continue;
+            }
+        };
+        if let Some(older_than) = options.older_than {
+            if age < older_than {
+                gctx.shell().warn(format!(
+                    "skipping scratch worktree {}: younger than {}; use a shorter `--older-than` duration or omit the age filter",
+                    path.display(),
+                    format_duration(older_than)
+                ));
+                skipped += 1;
+                drop(reservation);
+                continue;
+            }
+        }
+
+        let size = match directory_size(&path) {
+            Ok(size) => size,
+            Err(error) => {
+                gctx.shell().warn(format!("skipping scratch worktree {}: could not measure disk usage: {}", path.display(), error.message));
+                skipped += 1;
+                drop(reservation);
+                continue;
+            }
+        };
+        estimated_reclaimed += size;
+        candidates.push(PruneScratchCandidate { path, size, reservation });
+    }
+
+    let stale_metadata = crate::utils::git::output(options.base, &["worktree", "prune", "--dry-run"])?;
+    for line in stale_metadata.lines().filter(|line| !line.trim().is_empty()) {
+        gctx.shell().note(format!("stale Git worktree metadata: {line}"));
+    }
+
+    if !options.confirm {
+        gctx.shell().note("dry-run: no worktrees removed; pass `--confirm` to apply pruning");
+        for candidate in &candidates {
+            gctx.shell().note(format!(
+                "would remove scratch worktree {} (clean, available, detached, {})",
+                candidate.path.display(),
+                format_bytes(candidate.size)
+            ));
+        }
+        gctx.shell().note(format!("reclaimed disk space: 0 B (dry run; would reclaim {})", format_bytes(estimated_reclaimed)));
+        gctx.shell().note(format!("prune summary: {} scratch worktree(s) eligible, {skipped} skipped", candidates.len()));
+        return Ok(());
+    }
+
+    let mut reclaimed = 0;
+    let mut removed = 0;
+    for candidate in candidates {
+        let path_string = candidate.path.display().to_string();
+        let result = remove(
+            gctx,
+            &RemoveOptions {
+                base: options.base,
+                current: options.base,
+                cwd: options.base,
+                home: options.home,
+                name: &path_string,
+                force: false,
+                delete_branch: false,
+                tmux: true,
+                dry_run: false,
+                include_dirty: false,
+                include_in_use: false,
+                session_name: session_name_for(options.base, &path_string),
+            },
+        );
+        drop(candidate.reservation);
+        match result {
+            Ok(()) => {
+                removed += 1;
+                reclaimed += candidate.size;
+                gctx.shell().note(format!("removed scratch worktree {} ({})", path_string, format_bytes(candidate.size)));
+            }
+            Err(error) => {
+                skipped += 1;
+                gctx.shell().warn(format!("skipping scratch worktree {path_string}: removal failed after safety recheck: {}", error.message));
+            }
+        }
+    }
+
     crate::utils::git::run(options.base, &["worktree", "prune"])?;
+    gctx.shell().note(format!("reclaimed disk space: {}", format_bytes(reclaimed)));
+    gctx.shell().note(format!("prune summary: {removed} scratch worktree(s) removed, {skipped} skipped"));
     Ok(())
 }
 
@@ -1373,6 +1578,53 @@ fn target_dir(base: &Path, name: &str) -> PathBuf {
 
 fn scratch_dir(home: &Path) -> PathBuf {
     home.join(".bp/worktrees")
+}
+
+fn directory_size(path: &Path) -> Result<u64, CliError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Ok(metadata.len());
+    }
+
+    let mut size: u64 = 0;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        size = size
+            .checked_add(directory_size(&entry.path())?)
+            .ok_or_else(|| CliError::from(format!("disk usage is too large to measure: {}", path.display())))?;
+    }
+    Ok(size)
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {} ({bytes} B)", UNITS[unit])
+    }
+}
+
+fn format_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    let (value, unit) = if seconds % (7 * 24 * 60 * 60) == 0 {
+        (seconds / (7 * 24 * 60 * 60), "w")
+    } else if seconds % (24 * 60 * 60) == 0 {
+        (seconds / (24 * 60 * 60), "d")
+    } else if seconds % (60 * 60) == 0 {
+        (seconds / (60 * 60), "h")
+    } else if seconds % 60 == 0 {
+        (seconds / 60, "m")
+    } else {
+        (seconds, "s")
+    };
+    format!("{value}{unit}")
 }
 
 struct ScratchReservation {

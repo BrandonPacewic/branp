@@ -96,7 +96,30 @@ fn remove_cli() -> Command {
 }
 
 fn prune_cli() -> Command {
-    Command::new("prune").about("Run git worktree prune")
+    Command::new("prune")
+        .about("Preview safe cleanup of scratch worktrees and stale Git worktree metadata")
+        .arg(
+            Arg::new("confirm")
+                .long("confirm")
+                .visible_alias("yes")
+                .help("Apply the cleanup; without this flag prune is a dry run")
+                .action(ArgAction::SetTrue)
+                .conflicts_with("dry-run"),
+        )
+        .arg(
+            Arg::new("dry-run")
+                .short('n')
+                .long("dry-run")
+                .help("Preview cleanup without changing worktrees (the default)")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("older-than")
+                .long("older-than")
+                .visible_alias("age")
+                .value_name("DURATION")
+                .help("Only clean scratch worktrees older than this duration, such as 7d or 12h"),
+        )
 }
 
 fn gone_cli() -> Command {
@@ -202,9 +225,28 @@ fn remove_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     )
 }
 
-fn prune_exec(gctx: &mut GlobalContext, _args: &ArgMatches) -> CliResult {
+fn prune_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let repo = ops::Repo::discover(gctx.cwd())?;
-    ops::prune(gctx, &ops::PruneOptions { base: &repo.base })
+    let older_than = args.get_one::<String>("older-than").map(|value| parse_duration(value)).transpose()?;
+    let home = gctx.home().clone();
+    ops::prune(gctx, &ops::PruneOptions { base: &repo.base, home: &home, confirm: args.get_flag("confirm"), older_than })
+}
+
+fn parse_duration(value: &str) -> Result<std::time::Duration, CliError> {
+    let Some(unit) = value.chars().last() else {
+        return Err(CliError::from("invalid duration; use a value such as 30m, 12h, or 7d"));
+    };
+    let (number, multiplier) = match unit {
+        's' => (&value[..value.len() - 1], 1),
+        'm' => (&value[..value.len() - 1], 60),
+        'h' => (&value[..value.len() - 1], 60 * 60),
+        'd' => (&value[..value.len() - 1], 24 * 60 * 60),
+        'w' => (&value[..value.len() - 1], 7 * 24 * 60 * 60),
+        _ => return Err(CliError::from(format!("invalid duration `{value}`; use a value such as 30m, 12h, or 7d"))),
+    };
+    let number = number.parse::<u64>().map_err(|_| CliError::from(format!("invalid duration `{value}`; use a value such as 30m, 12h, or 7d")))?;
+    let seconds = number.checked_mul(multiplier).ok_or_else(|| CliError::from(format!("duration is too large: `{value}`")))?;
+    Ok(std::time::Duration::from_secs(seconds))
 }
 
 fn gone_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
@@ -306,5 +348,13 @@ mod tests {
         let (_, new_args) = matches.subcommand().unwrap();
         let values = new_args.get_many::<String>("name").unwrap().map(String::as_str).collect::<Vec<_>>();
         assert_eq!(values, ["example", "feature"]);
+    }
+
+    #[test]
+    fn prune_accepts_duration_units_and_rejects_ambiguous_values() {
+        assert_eq!(parse_duration("30m").unwrap(), std::time::Duration::from_secs(30 * 60));
+        assert_eq!(parse_duration("2d").unwrap(), std::time::Duration::from_secs(2 * 24 * 60 * 60));
+        assert!(parse_duration("tomorrow").is_err());
+        assert!(parse_duration("7").is_err());
     }
 }

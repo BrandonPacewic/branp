@@ -439,6 +439,88 @@ fn worktree_prune_does_not_require_default_branch_discovery() {
 }
 
 #[test]
+fn worktree_prune_previews_then_removes_clean_scratch_with_confirmation() {
+    let workspace = TestWorkspace::new("worktree-prune-scratch");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    let home = repo.sibling("home");
+    let scratch = add_detached_scratch(&repo, &home, "scratch-clean");
+
+    let preview = repo.bp_with_env(["worktree", "prune"], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&preview, "preview scratch pruning");
+    let preview_text = format!("{}{}", stdout(&preview), stderr(&preview));
+    assert!(preview_text.contains("dry-run: no worktrees removed"), "preview did not explain its safety default:\n{preview_text}");
+    assert!(preview_text.contains("would remove scratch worktree"), "preview omitted the clean scratch worktree:\n{preview_text}");
+    assert!(preview_text.contains("reclaimed disk space"), "preview omitted disk-space reporting:\n{preview_text}");
+    assert!(scratch.is_dir(), "dry run removed the scratch worktree");
+
+    let confirmed = repo.bp_with_env(["worktree", "prune", "--confirm"], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&confirmed, "confirmed scratch pruning");
+    let confirmed_text = format!("{}{}", stdout(&confirmed), stderr(&confirmed));
+    assert!(confirmed_text.contains("removed scratch worktree"), "confirmed prune omitted the removal:\n{confirmed_text}");
+    assert!(confirmed_text.contains("reclaimed disk space:"), "confirmed prune omitted reclaimed space:\n{confirmed_text}");
+    assert!(!scratch.exists(), "confirmed prune did not remove the clean scratch worktree");
+}
+
+#[test]
+fn worktree_prune_protects_dirty_named_and_young_worktrees() {
+    let workspace = TestWorkspace::new("worktree-prune-protected");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    repo.git(["branch", "feature"]);
+    let named = repo.sibling("feature");
+    repo.git(["worktree", "add", named.to_str().unwrap(), "feature"]);
+
+    let home = repo.sibling("home");
+    let dirty = add_detached_scratch(&repo, &home, "scratch-dirty");
+    fs::write(dirty.join("untracked.txt"), "keep me\n").unwrap();
+    let young = add_detached_scratch(&repo, &home, "scratch-young");
+
+    let output = repo.bp_with_env(["worktree", "prune", "--confirm", "--older-than", "1d"], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&output, "protected scratch pruning");
+    let text = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(text.contains("dirty changes"), "dirty skip omitted an actionable reason:\n{text}");
+    assert!(text.contains("younger than 1d"), "age skip omitted an actionable reason:\n{text}");
+    assert!(text.contains("named worktrees are protected"), "named skip omitted an actionable reason:\n{text}");
+    assert!(dirty.is_dir(), "prune removed a dirty scratch worktree");
+    assert!(young.is_dir(), "prune removed a scratch worktree younger than the requested age");
+    assert!(named.is_dir(), "prune removed a named worktree");
+}
+
+#[cfg(unix)]
+#[test]
+fn worktree_prune_protects_in_use_scratch_worktrees() {
+    let workspace = TestWorkspace::new("worktree-prune-in-use");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    let home = repo.sibling("home");
+    let scratch = add_detached_scratch(&repo, &home, "scratch-in-use");
+
+    let mut child =
+        Command::new("sleep").arg("30").current_dir(&scratch).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let output = (0..80).find_map(|_| {
+        let output = repo.bp_with_env(["worktree", "prune", "--confirm"], &[("HOME", home.to_str().unwrap())]);
+        if format!("{}{}", stdout(&output), stderr(&output)).contains("worktree is in use") {
+            Some(output)
+        } else {
+            thread::sleep(Duration::from_millis(25));
+            None
+        }
+    });
+
+    let Some(output) = output else {
+        child.kill().unwrap();
+        child.wait().unwrap();
+        panic!("prune did not report the in-use scratch worktree");
+    };
+    let text = format!("{}{}", stdout(&output), stderr(&output));
+    assert!(text.contains("sleep"), "in-use skip omitted process detail:\n{text}");
+    assert!(scratch.is_dir(), "prune removed an in-use scratch worktree");
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
+#[test]
 fn worktree_return_infers_current_scratch_and_preserves_ignored_files() {
     let workspace = TestWorkspace::new("worktree-return-clean");
     let repo = workspace.git_repo("repo", "mega");
@@ -572,7 +654,6 @@ fn worktree_list_reports_base_named_and_detached_worktrees_with_state() {
     assert!(scratch_line.contains("clean"), "scratch row did not report clean state:\n{text}");
 }
 
-#[cfg(unix)]
 fn add_detached_scratch(repo: &GitRepo, home: &Path, name: &str) -> PathBuf {
     let scratch = home.join(".bp/worktrees").join(name);
     fs::create_dir_all(scratch.parent().unwrap()).unwrap();
