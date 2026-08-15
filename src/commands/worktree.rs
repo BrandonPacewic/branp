@@ -156,7 +156,7 @@ fn remove_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
 
 fn prune_exec(gctx: &mut GlobalContext, _args: &ArgMatches) -> CliResult {
     let repo = ops::Repo::discover(gctx.cwd())?;
-    ops::prune(&repo.base)
+    ops::prune(gctx, &ops::PruneOptions { base: &repo.base })
 }
 
 fn gone_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {

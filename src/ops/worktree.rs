@@ -23,6 +23,10 @@ pub struct ListOptions<'a> {
     pub pr_lookup: bool,
 }
 
+pub struct PruneOptions<'a> {
+    pub base: &'a Path,
+}
+
 pub struct TrackOptions<'a> {
     pub base: &'a Path,
     pub current: &'a Path,
@@ -111,8 +115,8 @@ pub fn path(gctx: &mut GlobalContext, options: &PathOptions<'_>) -> CliResult {
     Ok(())
 }
 
-pub fn prune(repo: &Path) -> CliResult {
-    crate::utils::git::run(repo, &["worktree", "prune"])?;
+pub fn prune(_gctx: &mut GlobalContext, options: &PruneOptions<'_>) -> CliResult {
+    crate::utils::git::run(options.base, &["worktree", "prune"])?;
     Ok(())
 }
 
