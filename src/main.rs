@@ -80,16 +80,6 @@ impl Exec {
     }
 }
 
-const BUILTIN_ALIASES: [(&str, &str, &str); 3] = [("f", "format", "alias: format"), ("g", "git", "alias: git"), ("r", "dbrun", "alias: dbrun")];
-
-fn builtin_aliases_execs(cmd: &str) -> Option<&(&str, &str, &str)> {
-    BUILTIN_ALIASES.iter().find(|alias| alias.0 == cmd)
-}
-
-fn aliased_command(command: &str) -> Option<Vec<String>> {
-    builtin_aliases_execs(command).map(|alias| vec![alias.1.to_string()])
-}
-
 #[derive(Default)]
 struct GlobalArgs {
     verbose: u32,
@@ -105,7 +95,7 @@ impl GlobalArgs {
 fn expand_aliases(gctx: &mut GlobalContext, args: ArgMatches, mut already_expanded: Vec<String>) -> Result<(ArgMatches, GlobalArgs), CliError> {
     if let Some((cmd, subcommand_args)) = args.subcommand() {
         let exec = commands::branp_exec(cmd);
-        let aliased_cmd = aliased_command(cmd);
+        let aliased_cmd = commands::aliased_command(cmd);
 
         match (exec, aliased_cmd) {
             (Some(_), Some(_)) => {
