@@ -43,12 +43,12 @@ The following tasks make those worktrees reusable and safely manageable.
 
 ### Removal and Destruction
 
-- [ ] Make removal accept exact names and paths for nested scratch worktrees.
-- [ ] Make scratch removal avoid branch deletion because scratch worktrees are detached and branchless.
-- [ ] Keep returning a worktree for reuse separate from permanently destroying it.
-- [ ] Add a dry-run preview for destructive removal.
+- [x] Make removal accept exact names and paths for nested scratch worktrees.
+- [x] Make scratch removal avoid branch deletion because scratch worktrees are detached and branchless.
+- [x] Keep returning a worktree for reuse separate from permanently destroying it.
+- [x] Add a dry-run preview for destructive removal.
 - [ ] Protect dirty, in-use, leased, and unverified worktrees by default.
-- [ ] Require separate explicit options for destructive risk classes such as including dirty or in-use worktrees.
+- [x] Require separate explicit options for destructive risk classes such as including dirty or in-use worktrees.
 
 ### Pruning
 
