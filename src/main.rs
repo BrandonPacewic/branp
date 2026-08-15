@@ -1,4 +1,6 @@
 use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 
 use branp_cli::context::GlobalContext;
 use branp_cli::errors::{CliError, CliResult};
@@ -62,6 +64,7 @@ fn run(gctx: &mut GlobalContext) -> CliResult {
 
 enum Exec {
     Builtin(commands::Exec),
+    External(String),
 }
 
 impl Exec {
@@ -69,15 +72,57 @@ impl Exec {
         if let Some(exec) = commands::builtin_exec(cmd) {
             Ok(Self::Builtin(exec))
         } else {
-            Err(CliError::new(format!("`{cmd}` is not a valid subcommand"), 1))
+            Ok(Self::External(cmd.to_string()))
         }
     }
 
     fn exec(self, gctx: &mut context::GlobalContext, subcommand_args: &ArgMatches) -> CliResult {
         match self {
             Self::Builtin(exec) => exec(gctx, subcommand_args),
+            Self::External(cmd) => execute_external_subcommand(gctx, &cmd, subcommand_args),
         }
     }
+}
+
+fn execute_external_subcommand(gctx: &mut GlobalContext, cmd: &str, subcommand_args: &ArgMatches) -> CliResult {
+    let Some(path) = find_external_subcommand(cmd) else {
+        return Err(CliError::new(format!("no such command: `{cmd}`\n\nhelp: external bp subcommands must be named `bp-{cmd}` and be on PATH"), 101));
+    };
+
+    let status = ProcessCommand::new(path).args(external_subcommand_args(cmd, subcommand_args)).current_dir(gctx.cwd()).status()?;
+    if let Some(code) = status.code() {
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(CliError::new(format!("external subcommand `{cmd}` failed with exit code {code}"), code))
+        }
+    } else {
+        Err(CliError::new(format!("external subcommand `{cmd}` terminated by signal"), 1))
+    }
+}
+
+fn external_subcommand_args(cmd: &str, subcommand_args: &ArgMatches) -> Vec<OsString> {
+    let mut args = vec![OsString::from(cmd)];
+    args.extend(subcommand_args.get_many::<OsString>("").unwrap_or_default().cloned());
+    args
+}
+
+fn find_external_subcommand(cmd: &str) -> Option<PathBuf> {
+    let command_exe = format!("bp-{cmd}{}", std::env::consts::EXE_SUFFIX);
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).map(|dir| dir.join(&command_exe)).find(|path| is_executable(path))
+}
+
+#[cfg(unix)]
+fn is_executable(path: impl AsRef<Path>) -> bool {
+    use std::os::unix::prelude::*;
+
+    std::fs::metadata(path).map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn is_executable(path: impl AsRef<Path>) -> bool {
+    path.as_ref().is_file()
 }
 
 #[derive(Default)]
@@ -195,5 +240,24 @@ mod tests {
     #[test]
     fn cli_definition_is_valid() {
         branp().debug_assert();
+    }
+
+    #[test]
+    fn unknown_subcommands_are_external_dispatch_candidates() {
+        match Exec::infer("outside").expect("unknown commands should dispatch externally") {
+            Exec::External(cmd) => assert_eq!(cmd, "outside"),
+            Exec::Builtin(_) => panic!("unknown command resolved as built-in"),
+        }
+    }
+
+    #[test]
+    fn external_dispatch_forwards_command_name_and_trailing_args() {
+        let matches = branp().try_get_matches_from(["bp", "outside", "one", "--two"]).expect("external command should parse");
+        let (_, subcommand_args) = matches.subcommand().expect("external subcommand");
+
+        assert_eq!(
+            external_subcommand_args("outside", subcommand_args),
+            vec![OsString::from("outside"), OsString::from("one"), OsString::from("--two")]
+        );
     }
 }
