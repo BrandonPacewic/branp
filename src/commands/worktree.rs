@@ -213,8 +213,6 @@ fn create(gctx: &mut GlobalContext, repo: &Repo, name: &str, branch: &str, fetch
         return Err(CliError::from(format!("worktree already exists: {}", target.display())));
     }
 
-    let start_point = confirm_default_source_branch(gctx, repo)?;
-
     if fetch {
         let _ = git::run(&repo.base, &["fetch", "origin", branch]);
     }
@@ -225,10 +223,13 @@ fn create(gctx: &mut GlobalContext, repo: &Repo, name: &str, branch: &str, fetch
         git::run(&repo.base, &args)?;
     } else if git::remote_branch_exists(&repo.base, "origin", branch)? {
         git::run(&repo.base, &["worktree", "add", target_arg.as_str(), "-b", branch, &format!("origin/{branch}")])?;
-    } else if let Some(start_point) = start_point {
-        git::run(&repo.base, &["worktree", "add", target_arg.as_str(), "-b", branch, &start_point])?;
     } else {
-        git::run(&repo.base, &["worktree", "add", target_arg.as_str(), "-b", branch])?;
+        let start_point = confirm_default_source_branch(gctx, repo)?;
+        if let Some(start_point) = start_point {
+            git::run(&repo.base, &["worktree", "add", target_arg.as_str(), "-b", branch, &start_point])?;
+        } else {
+            git::run(&repo.base, &["worktree", "add", target_arg.as_str(), "-b", branch])?;
+        }
     }
 
     if submodules {
