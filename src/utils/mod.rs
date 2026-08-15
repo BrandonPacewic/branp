@@ -3,6 +3,7 @@ pub mod command;
 pub mod fs;
 pub mod gh;
 pub mod git;
+pub mod in_use;
 pub mod process;
 pub mod table;
 pub mod terminal;

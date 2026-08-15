@@ -325,15 +325,21 @@ fn resolve_worktree_rows(
         .enumerate()
         .map(|(index, worktree)| {
             let path = worktree.path.clone();
-            thread::spawn(move || (index, status_summary(&path).unwrap_or_default(), has_submodules(&path)))
+            thread::spawn(move || {
+                let status = status_summary(&path).unwrap_or_default();
+                let has_submodules = has_submodules(&path);
+                let processes = crate::utils::process::processes_in_worktree(&path).unwrap_or_default();
+                (index, status, has_submodules, processes)
+            })
         })
         .collect();
 
     for handle in handles {
-        let (index, status, has_submodules) = handle.join().map_err(|_| CliError::from("worktree status lookup panicked"))?;
+        let (index, status, has_submodules, processes) = handle.join().map_err(|_| CliError::from("worktree status lookup panicked"))?;
         if let Some(row) = rows.get_mut(index) {
             row.apply_status(status);
             row.has_submodules = Some(has_submodules);
+            row.apply_processes(processes);
         }
     }
 
@@ -362,8 +368,10 @@ fn render_worktree_rows_dynamic(
         let tx = tx.clone();
         let path = worktree.path.clone();
         thread::spawn(move || {
-            let _ =
-                tx.send(WorktreeUpdate::Status { index, status: status_summary(&path).unwrap_or_default(), has_submodules: has_submodules(&path) });
+            let status = status_summary(&path).unwrap_or_default();
+            let has_submodules = has_submodules(&path);
+            let processes = crate::utils::process::processes_in_worktree(&path).unwrap_or_default();
+            let _ = tx.send(WorktreeUpdate::Status { index, status, has_submodules, processes });
         });
         pending += 1;
     }
@@ -380,7 +388,7 @@ fn render_worktree_rows_dynamic(
     {
         let tx = tx.clone();
         thread::spawn(move || {
-            let sessions = crate::utils::tmux::sessions().unwrap_or_default().into_iter().collect();
+            let sessions = crate::utils::in_use::active_sessions();
             let _ = tx.send(WorktreeUpdate::TmuxSessions(sessions));
         });
         pending += 1;
@@ -459,6 +467,7 @@ struct WorktreeRow {
     remote_gone: Option<bool>,
     remote_exists: Option<bool>,
     has_submodules: Option<bool>,
+    in_use: Option<crate::utils::in_use::InUseInspection>,
     tmux_session: Option<String>,
 }
 
@@ -478,12 +487,17 @@ impl WorktreeRow {
             remote_gone: None,
             remote_exists: None,
             has_submodules: None,
+            in_use: None,
             tmux_session: None,
         }
     }
 
     fn apply_status(&mut self, status: StatusSummary) {
         self.status = Some(status);
+    }
+
+    fn apply_processes(&mut self, processes: Vec<crate::utils::process::ProcessInfo>) {
+        self.in_use.get_or_insert_with(Default::default).processes = processes;
     }
 
     fn apply_remote_branches(&mut self, remote_branches: &HashSet<String>, default_branch: &str) {
@@ -496,6 +510,11 @@ impl WorktreeRow {
         self.tmux_session = name_from_worktree_path(&self.source_base, &self.source_path)
             .map(|name| session_name_for(&self.source_base, &name))
             .filter(|session| tmux_sessions.contains(session));
+        self.in_use.get_or_insert_with(Default::default).active_sessions = self.tmux_session.clone().into_iter().collect();
+    }
+
+    fn in_use_reasons(&self) -> Vec<String> {
+        self.in_use.as_ref().map(crate::utils::in_use::InUseInspection::reasons).unwrap_or_default()
     }
 
     fn is_dirty(&self) -> Option<bool> {
@@ -503,7 +522,7 @@ impl WorktreeRow {
     }
 
     fn badges(&self, pr: DynamicBadge, spinner: Option<char>) -> WorktreeBadges {
-        let (mut state, state_color) = match &self.status {
+        let (mut state, mut state_color) = match &self.status {
             Some(status) if status.is_dirty() => {
                 let details = status.tracked_badge();
                 let cleanliness = if details.is_empty() { "dirty".to_string() } else { format!("dirty ({details})") };
@@ -518,6 +537,12 @@ impl WorktreeRow {
         }
         if self.current {
             state = format!("{state},current");
+        }
+
+        let in_use_reasons = self.in_use_reasons();
+        if !in_use_reasons.is_empty() {
+            state = format!("{state},in-use:{}", in_use_reasons.join(","));
+            state_color = BadgeColor::YellowBold;
         }
 
         WorktreeBadges {
@@ -646,7 +671,7 @@ enum PrRender<'a> {
 }
 
 enum WorktreeUpdate {
-    Status { index: usize, status: StatusSummary, has_submodules: bool },
+    Status { index: usize, status: StatusSummary, has_submodules: bool, processes: Vec<crate::utils::process::ProcessInfo> },
     RemoteBranches(HashSet<String>),
     TmuxSessions(HashSet<String>),
     PullRequests(Vec<crate::utils::gh::PullRequest>),
@@ -662,10 +687,11 @@ struct WorktreeRenderState {
 impl WorktreeRenderState {
     fn apply(&mut self, update: WorktreeUpdate) {
         match update {
-            WorktreeUpdate::Status { index, status, has_submodules } => {
+            WorktreeUpdate::Status { index, status, has_submodules, processes } => {
                 if let Some(row) = self.rows.get_mut(index) {
                     row.apply_status(status);
                     row.has_submodules = Some(has_submodules);
+                    row.apply_processes(processes);
                 }
             }
             WorktreeUpdate::RemoteBranches(branches) => {

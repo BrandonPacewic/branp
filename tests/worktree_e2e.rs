@@ -2,6 +2,9 @@ mod support;
 
 use std::fs;
 use std::path::Path;
+#[cfg(unix)] use std::process::{Command, Stdio};
+#[cfg(unix)] use std::thread;
+#[cfg(unix)] use std::time::Duration;
 
 use support::{assert_success, stderr, stdout, GitRepo, TestWorkspace};
 
@@ -107,6 +110,58 @@ fn worktree_remove_deletes_clean_worktree_and_branch() {
 
     assert!(!worktree.exists(), "expected worktree to be removed from {}", worktree.display());
     assert_eq!(stdout(&repo.git(["branch", "--list", "feature"])), "");
+}
+
+#[cfg(unix)]
+#[test]
+fn worktree_list_reports_process_use_without_matching_a_sibling_worktree() {
+    let workspace = TestWorkspace::new("worktree-list-in-use");
+    let repo = workspace.git_repo("repo", "mega");
+
+    repo.commit_file("file.txt", "base\n", "initial");
+    repo.git(["branch", "feature"]);
+    repo.git(["branch", "feature-extra"]);
+
+    assert_success(&repo.bp(["worktree", "new", "feature", "--no-fetch", "--no-submodules", "--no-tmux"]), "create feature worktree");
+    assert_success(&repo.bp(["worktree", "new", "feature-extra", "--no-fetch", "--no-submodules", "--no-tmux"]), "create sibling worktree");
+
+    let feature = repo.sibling("feature");
+    let mut child = Command::new("sleep")
+        .arg("30")
+        .current_dir(&feature)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start process in worktree");
+    let pid = child.id().to_string();
+
+    let output = (0..80).find_map(|_| {
+        let output = repo.bp(["worktree", "list", "--no-pr"]);
+        if stdout(&output).contains(&format!("in-use:process:{pid}")) {
+            Some(output)
+        } else {
+            thread::sleep(Duration::from_millis(25));
+            None
+        }
+    });
+    let Some(output) = output else {
+        child.kill().expect("stop process after detection timeout");
+        child.wait().expect("reap process after detection timeout");
+        panic!("worktree list did not report process {pid}");
+    };
+
+    assert_success(&output, "list worktrees with process use");
+    let text = stdout(&output);
+    let feature_line = text.lines().find(|line| line.contains("repo-feature")).expect("feature worktree row");
+    assert!(feature_line.contains(&format!("in-use:process:{pid}")), "feature row did not report process use:\n{text}");
+    assert!(feature_line.contains("sleep"), "feature row did not report the process name:\n{text}");
+
+    let sibling_line = text.lines().find(|line| line.contains("repo-feature-extra")).expect("sibling worktree row");
+    assert!(!sibling_line.contains("in-use:"), "sibling row was falsely reported in use:\n{text}");
+
+    child.kill().expect("stop process in worktree");
+    child.wait().expect("reap process in worktree");
 }
 
 #[test]
