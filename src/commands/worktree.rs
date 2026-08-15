@@ -1,7 +1,6 @@
 //! Git worktree helpers.
 
 use std::collections::HashSet;
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
@@ -129,7 +128,18 @@ fn new_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResu
 }
 
 fn remove_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
-    remove(gctx, repo, required(args, "name")?, args.get_flag("force"), !args.get_flag("keep-branch"), !args.get_flag("no-tmux"))
+    let name = required(args, "name")?;
+    ops::remove(
+        gctx,
+        &ops::RemoveOptions {
+            base: &repo.base,
+            name,
+            force: args.get_flag("force"),
+            delete_branch: !args.get_flag("keep-branch"),
+            tmux: !args.get_flag("no-tmux"),
+            session_name: repo.session_name(name),
+        },
+    )
 }
 
 fn prune_exec(_gctx: &mut GlobalContext, repo: &Repo, _args: &ArgMatches) -> CliResult {
@@ -195,7 +205,7 @@ fn resolve_worktree_rows(repo: &Repo, worktrees: &[Worktree], path_root: &Path, 
         .enumerate()
         .map(|(index, worktree)| {
             let path = worktree.path.clone();
-            thread::spawn(move || (index, status_summary(&path).unwrap_or_default(), has_submodules(&path)))
+            thread::spawn(move || (index, status_summary(&path).unwrap_or_default(), ops::has_submodules(&path)))
         })
         .collect();
 
@@ -224,8 +234,11 @@ fn render_worktree_rows_dynamic(repo: &Repo, worktrees: Vec<Worktree>, path_root
         let tx = tx.clone();
         let path = worktree.path.clone();
         thread::spawn(move || {
-            let _ =
-                tx.send(WorktreeUpdate::Status { index, status: status_summary(&path).unwrap_or_default(), has_submodules: has_submodules(&path) });
+            let _ = tx.send(WorktreeUpdate::Status {
+                index,
+                status: status_summary(&path).unwrap_or_default(),
+                has_submodules: ops::has_submodules(&path),
+            });
         });
         pending += 1;
     }
@@ -310,40 +323,6 @@ fn create(gctx: &mut GlobalContext, repo: &Repo, name: &str, branch: &str, fetch
     Ok(())
 }
 
-fn remove(gctx: &mut GlobalContext, repo: &Repo, name: &str, force: bool, delete_branch: bool, tmux: bool) -> CliResult {
-    let target = repo.target_dir(name);
-    if !target.is_dir() {
-        return Err(CliError::from(format!("worktree not found: {}", target.display())));
-    }
-
-    let branch = git::current_branch(&target)?;
-    if delete_branch {
-        if let Some(branch) = &branch {
-            preflight_branch_delete(&repo.base, branch, force)?;
-        }
-    }
-    let target_has_submodules = has_submodules(&target);
-    let confirmed_lossy_remove = confirm_lossy_remove(gctx, &target)?;
-    deinit_submodules(gctx, &target)?;
-
-    let target_arg = path_arg(&target);
-    let remove_args = worktree_remove_args(target_arg.as_str(), force, confirmed_lossy_remove, target_has_submodules);
-    git::run(&repo.base, &remove_args)?;
-    git::run(&repo.base, &["worktree", "prune"])?;
-
-    if delete_branch {
-        if let Some(branch) = branch {
-            git::delete_local_branch(&repo.base, &branch, force)?;
-        }
-    }
-
-    if tmux {
-        crate::utils::tmux::kill_session(gctx, &repo.session_name(name))?;
-    }
-
-    Ok(())
-}
-
 fn remove_gone(gctx: &mut GlobalContext, repo: &Repo, dry_run: bool, force: bool, tmux: bool) -> CliResult {
     git::run(&repo.base, &["fetch", "--prune"])?;
     let worktrees = worktrees(&repo.base)?;
@@ -368,7 +347,10 @@ fn remove_gone(gctx: &mut GlobalContext, repo: &Repo, dry_run: bool, force: bool
         if dry_run {
             gctx.shell().note(format!("{name} ({branch})"));
         } else {
-            remove(gctx, repo, &name, force, true, tmux)?;
+            ops::remove(
+                gctx,
+                &ops::RemoveOptions { base: &repo.base, name: &name, force, delete_branch: true, tmux, session_name: repo.session_name(&name) },
+            )?;
         }
     }
 
@@ -843,29 +825,6 @@ fn status_summary(repo: &Path) -> Result<StatusSummary, CliError> {
     Ok(summary)
 }
 
-fn confirm_lossy_remove(gctx: &mut GlobalContext, repo: &Path) -> Result<bool, CliError> {
-    let changes = removal_risk_changes(repo)?;
-    if changes.is_empty() {
-        return Ok(false);
-    }
-
-    gctx.shell().warn(format!("removing this worktree will lose local changes in {}:", repo.display()));
-    for change in changes {
-        gctx.shell().warn(format!("  {change}"));
-    }
-
-    eprint!("Type `yes` to remove the worktree anyway: ");
-    io::stderr().flush()?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    if input.trim() == "yes" {
-        Ok(true)
-    } else {
-        Err(CliError::from("worktree removal cancelled"))
-    }
-}
-
 fn confirm_default_source_branch(gctx: &mut GlobalContext, repo: &Repo) -> Result<Option<String>, CliError> {
     let current_branch = git::current_branch(&repo.base)?;
     if current_branch.as_deref() == Some(repo.default_branch.as_str()) {
@@ -886,93 +845,6 @@ fn confirm_default_source_branch(gctx: &mut GlobalContext, repo: &Repo) -> Resul
     } else {
         Err(CliError::from("worktree creation cancelled"))
     }
-}
-
-fn removal_risk_changes(repo: &Path) -> Result<Vec<String>, CliError> {
-    let mut changes = collect_status_changes(repo, None)?;
-    for submodule in submodule_paths(repo)? {
-        let submodule_repo = repo.join(&submodule);
-        if !submodule_repo.is_dir() {
-            continue;
-        }
-
-        changes.extend(collect_status_changes(&submodule_repo, Some(&submodule))?);
-    }
-
-    Ok(changes)
-}
-
-fn collect_status_changes(repo: &Path, prefix: Option<&str>) -> Result<Vec<String>, CliError> {
-    let output = git::output(repo, &["status", "--porcelain"])?;
-    let mut changes = Vec::new();
-
-    for line in output.lines() {
-        if is_lossy_status(line) {
-            changes.push(format_status_line(line, prefix));
-        }
-    }
-
-    Ok(changes)
-}
-
-fn is_lossy_status(line: &str) -> bool {
-    line.starts_with("??") || line.get(..2).unwrap_or("").chars().any(|status| status != ' ')
-}
-
-fn format_status_line(line: &str, prefix: Option<&str>) -> String {
-    let status = line.get(..2).unwrap_or("").trim();
-    let path = line.get(3..).unwrap_or("").trim();
-
-    if let Some(prefix) = prefix {
-        format!("{status} {prefix}/{path}")
-    } else {
-        format!("{status} {path}")
-    }
-}
-
-fn submodule_paths(repo: &Path) -> Result<Vec<String>, CliError> {
-    if !has_submodules(repo) {
-        return Ok(Vec::new());
-    }
-
-    let output = git::output(repo, &["config", "--file", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$"])?;
-
-    Ok(output.lines().filter_map(|line| line.split_once(' ').map(|(_, path)| path.to_string())).collect())
-}
-
-fn deinit_submodules(gctx: &mut GlobalContext, repo: &Path) -> CliResult {
-    if !has_submodules(repo) {
-        return Ok(());
-    }
-
-    git::run(repo, &["submodule", "deinit", "--force", "--all"])?;
-    gctx.shell().note("submodules: deinitialized");
-    Ok(())
-}
-
-fn has_submodules(repo: &Path) -> bool {
-    repo.join(".gitmodules").is_file()
-}
-
-fn preflight_branch_delete(repo: &Path, branch: &str, force: bool) -> CliResult {
-    if force || !git::local_branch_exists(repo, branch)? || git::local_branch_merged_for_delete(repo, branch)? {
-        return Ok(());
-    }
-
-    Err(CliError::from(branch_delete_preflight_message(branch)))
-}
-
-fn branch_delete_preflight_message(branch: &str) -> String {
-    format!("local branch `{branch}` is not fully merged; pass --force to delete it anyway or --keep-branch to remove only the worktree")
-}
-
-fn worktree_remove_args(target: &str, force: bool, confirmed_lossy_remove: bool, has_submodules: bool) -> Vec<&str> {
-    let mut args = vec!["worktree", "remove"];
-    if force || confirmed_lossy_remove || has_submodules {
-        args.push("--force");
-    }
-    args.push(target);
-    args
 }
 
 fn required<'a>(args: &'a ArgMatches, name: &str) -> Result<&'a str, CliError> {
@@ -998,33 +870,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn staged_changes_are_lossy_for_worktree_removal() {
-        assert!(is_lossy_status("M  src/main.rs"));
-        assert!(is_lossy_status("A  src/main.rs"));
-        assert!(is_lossy_status(" M src/main.rs"));
-        assert!(is_lossy_status("?? scratch.txt"));
-        assert!(!is_lossy_status("   clean-looking"));
-    }
-
-    #[test]
-    fn submodules_force_git_worktree_remove_after_preflight() {
-        assert_eq!(worktree_remove_args("/tmp/example", false, false, false), vec!["worktree", "remove", "/tmp/example"]);
-        assert_eq!(worktree_remove_args("/tmp/example", false, false, true), vec!["worktree", "remove", "--force", "/tmp/example"]);
-        assert_eq!(worktree_remove_args("/tmp/example", false, true, false), vec!["worktree", "remove", "--force", "/tmp/example"]);
-        assert_eq!(worktree_remove_args("/tmp/example", true, false, false), vec!["worktree", "remove", "--force", "/tmp/example"]);
-    }
-
-    #[test]
     fn existing_local_branch_worktree_add_reuses_branch() {
         assert_eq!(worktree_add_existing_branch_args("/tmp/example", "feature"), vec!["worktree", "add", "/tmp/example", "feature"]);
-    }
-
-    #[test]
-    fn branch_delete_preflight_error_explains_choices() {
-        assert_eq!(
-            branch_delete_preflight_message("feature"),
-            "local branch `feature` is not fully merged; pass --force to delete it anyway or --keep-branch to remove only the worktree"
-        );
     }
 
     #[test]
