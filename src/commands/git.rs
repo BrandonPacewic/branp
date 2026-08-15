@@ -14,12 +14,12 @@ pub fn cli() -> Command {
 type GitExec = fn(&mut GlobalContext, &ArgMatches) -> CliResult;
 
 fn builtin() -> Vec<Command> {
-    vec![coauthor_cli(), prs_cli(), check_cli(), fork_cli(), default_branch_cli(), ignore_cli(), open_cli()]
+    vec![coauthor::cli(), prs_cli(), check_cli(), fork_cli(), default_branch_cli(), ignore_cli(), open_cli()]
 }
 
 fn builtin_exec(cmd: &str) -> Option<GitExec> {
     let exec = match cmd {
-        "coauthor" => coauthor,
+        "coauthor" => coauthor::exec,
         "prs" => prs,
         "check" => check,
         "fork" => fork,
@@ -40,12 +40,6 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     }
 
     Err(CliError::from("no `git` subcommand provided"))
-}
-
-fn coauthor_cli() -> Command {
-    Command::new("coauthor")
-        .about("Generate GitHub no-reply co-author lines")
-        .arg(Arg::new("usernames").help("One or more GitHub usernames").required(true).num_args(1..).value_name("USERNAME"))
 }
 
 fn prs_cli() -> Command {
@@ -116,11 +110,6 @@ fn open_cli() -> Command {
         .arg(Arg::new("remote").short('r').long("remote").help("Git remote to use").default_value("origin"))
 }
 
-fn coauthor(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
-    let usernames = args.get_many::<String>("usernames").unwrap().map(String::as_str).collect();
-    ops::coauthor(gctx, &ops::CoauthorOptions { usernames })
-}
-
 fn prs(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let remote = args.get_one::<String>("remote").unwrap();
     ops::prs(gctx, &ops::PrsOptions { remote })
@@ -168,6 +157,8 @@ fn open(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
 fn required<'a>(args: &'a ArgMatches, name: &str) -> Result<&'a str, CliError> {
     args.get_one::<String>(name).map(String::as_str).ok_or_else(|| CliError::from(format!("missing required argument `{name}`")))
 }
+
+mod coauthor;
 
 #[cfg(test)]
 mod tests {
