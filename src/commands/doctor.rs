@@ -6,7 +6,7 @@ use crate::context::GlobalContext;
 use crate::doctor::{self, CheckSelector, DoctorContext, Finding, Fix, Severity};
 use crate::errors::{CliError, CliResult};
 
-pub fn command() -> Command {
+pub fn cli() -> Command {
     Command::new("doctor")
         .about("Diagnose and repair local CLI integration issues")
         .subcommand_required(false)

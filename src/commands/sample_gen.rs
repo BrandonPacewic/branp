@@ -6,7 +6,7 @@ use std::process::Command as ProcessCommand;
 use crate::context::GlobalContext;
 use crate::errors::{CliError, CliResult};
 
-pub fn command() -> Command {
+pub fn cli() -> Command {
     Command::new("sample-gen")
         .about("Generate sample input/output files for a given C++ file")
         .arg(Arg::new("file").help("The file to run on").required(true).index(1))

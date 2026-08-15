@@ -7,7 +7,7 @@ use crate::errors::{CliError, CliResult};
 use crate::ops::git as ops;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
-pub fn command() -> Command {
+pub fn cli() -> Command {
     Command::new("git")
         .about("Git-related helpers")
         .subcommand_required(true)

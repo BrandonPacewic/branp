@@ -13,7 +13,7 @@ use crate::errors::{CliError, CliResult};
 use crate::ops::worktree::LinkStore;
 use crate::utils::git;
 
-pub fn command() -> Command {
+pub fn cli() -> Command {
     Command::new("worktree")
         .about("Manage sibling Git worktrees")
         .subcommand_required(true)

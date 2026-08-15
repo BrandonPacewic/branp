@@ -21,17 +21,17 @@ pub const BUILTIN_ALIASES: &[BuiltinAlias] = &[
 
 pub fn builtin() -> Vec<Command> {
     vec![
-        with_builtin_aliases(cloc::command()),
-        with_builtin_aliases(completion::command()),
-        with_builtin_aliases(doctor::command()),
-        with_builtin_aliases(dbrun::command()),
-        with_builtin_aliases(sample_gen::command()),
-        with_builtin_aliases(test_samples::command()),
-        with_builtin_aliases(format::command()),
-        with_builtin_aliases(gen::command()),
-        with_builtin_aliases(git::command()),
-        with_builtin_aliases(worktree::command()),
-        with_builtin_aliases(uninstall::command()),
+        with_builtin_aliases(cloc::cli()),
+        with_builtin_aliases(completion::cli()),
+        with_builtin_aliases(doctor::cli()),
+        with_builtin_aliases(dbrun::cli()),
+        with_builtin_aliases(sample_gen::cli()),
+        with_builtin_aliases(test_samples::cli()),
+        with_builtin_aliases(format::cli()),
+        with_builtin_aliases(gen::cli()),
+        with_builtin_aliases(git::cli()),
+        with_builtin_aliases(worktree::cli()),
+        with_builtin_aliases(uninstall::cli()),
     ]
 }
 
@@ -101,5 +101,21 @@ mod tests {
         let command = builtin().into_iter().find(|command| command.get_name() == "worktree").expect("worktree command");
 
         assert!(command.get_all_aliases().any(|alias| alias == "wt"));
+    }
+
+    #[test]
+    fn builtin_commands_have_exec_handlers() {
+        for command in builtin() {
+            assert!(builtin_exec(command.get_name()).is_some(), "{} is missing an exec handler", command.get_name());
+        }
+    }
+
+    #[test]
+    fn builtin_aliases_target_registered_commands() {
+        let commands = builtin().into_iter().map(|command| command.get_name().to_string()).collect::<Vec<_>>();
+
+        for alias in BUILTIN_ALIASES {
+            assert!(commands.iter().any(|command| command == alias.command), "{} aliases unknown command {}", alias.alias, alias.command);
+        }
     }
 }

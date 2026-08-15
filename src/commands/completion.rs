@@ -8,7 +8,7 @@ use crate::completions::completion_script;
 use crate::context::GlobalContext;
 use crate::errors::{CliError, CliResult};
 
-pub fn command() -> Command {
+pub fn cli() -> Command {
     Command::new("completion")
         .about("Generate shell completion scripts")
         .arg(Arg::new("shell").help("Shell to generate completions for").required(true).value_parser(clap::value_parser!(Shell)))
