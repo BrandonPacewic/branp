@@ -124,7 +124,20 @@ fn path_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliRes
 fn new_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
     let name = required(args, "name")?;
     let branch = args.get_one::<String>("branch").map_or(name, String::as_str);
-    create(gctx, repo, name, branch, !args.get_flag("no-fetch"), !args.get_flag("no-submodules"), !args.get_flag("no-tmux"))
+    ops::new(
+        gctx,
+        &ops::NewOptions {
+            base: &repo.base,
+            current: &repo.current,
+            default_branch: &repo.default_branch,
+            name,
+            branch,
+            fetch: !args.get_flag("no-fetch"),
+            submodules: !args.get_flag("no-submodules"),
+            tmux: !args.get_flag("no-tmux"),
+            session_name: repo.session_name(name),
+        },
+    )
 }
 
 fn remove_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
@@ -284,45 +297,6 @@ fn render_worktree_rows_dynamic(repo: &Repo, worktrees: Vec<Worktree>, path_root
     Ok(())
 }
 
-fn create(gctx: &mut GlobalContext, repo: &Repo, name: &str, branch: &str, fetch: bool, submodules: bool, tmux: bool) -> CliResult {
-    let target = repo.target_dir(name);
-    if target.exists() {
-        return Err(CliError::from(format!("worktree already exists: {}", target.display())));
-    }
-
-    if fetch {
-        let _ = git::run(&repo.base, &["fetch", "origin", branch]);
-    }
-
-    let target_arg = path_arg(&target);
-    if git::local_branch_exists(&repo.base, branch)? {
-        let args = worktree_add_existing_branch_args(target_arg.as_str(), branch);
-        git::run(&repo.base, &args)?;
-    } else if git::remote_branch_exists(&repo.base, "origin", branch)? {
-        git::run(&repo.base, &["worktree", "add", target_arg.as_str(), "-b", branch, &format!("origin/{branch}")])?;
-    } else {
-        let start_point = confirm_default_source_branch(gctx, repo)?;
-        if let Some(start_point) = start_point {
-            git::run(&repo.base, &["worktree", "add", target_arg.as_str(), "-b", branch, &start_point])?;
-        } else {
-            git::run(&repo.base, &["worktree", "add", target_arg.as_str(), "-b", branch])?;
-        }
-    }
-
-    if submodules {
-        git::run(&target, &["submodule", "update", "--init", "--recursive"])?;
-    }
-
-    ops::sync(gctx, &ops::SyncOptions { base: &repo.base, current: &repo.current, worktrees: vec![target.clone()], quiet: true, force: false })?;
-
-    if tmux {
-        crate::utils::tmux::ensure_session(gctx, &repo.session_name(name), &target)?;
-    }
-
-    gctx.shell().note(target.display());
-    Ok(())
-}
-
 fn remove_gone(gctx: &mut GlobalContext, repo: &Repo, dry_run: bool, force: bool, tmux: bool) -> CliResult {
     git::run(&repo.base, &["fetch", "--prune"])?;
     let worktrees = worktrees(&repo.base)?;
@@ -370,10 +344,6 @@ impl Repo {
         let default_branch = default_branch(&base)?;
 
         Ok(Self { base, current: root, default_branch })
-    }
-
-    fn target_dir(&self, name: &str) -> PathBuf {
-        PathBuf::from(format!("{}-{name}", self.base.display()))
     }
 
     fn session_name(&self, name: &str) -> String {
@@ -825,28 +795,6 @@ fn status_summary(repo: &Path) -> Result<StatusSummary, CliError> {
     Ok(summary)
 }
 
-fn confirm_default_source_branch(gctx: &mut GlobalContext, repo: &Repo) -> Result<Option<String>, CliError> {
-    let current_branch = git::current_branch(&repo.base)?;
-    if current_branch.as_deref() == Some(repo.default_branch.as_str()) {
-        return Ok(None);
-    }
-
-    let current_branch = current_branch.unwrap_or_else(|| "detached HEAD".to_string());
-    gctx.shell().warn(format!(
-        "base worktree is on `{current_branch}`, not the default branch `{}`; the new worktree will branch from the current base HEAD",
-        repo.default_branch
-    ));
-    if gctx.shell().confirm("Continue creating the worktree?")? {
-        return Ok(None);
-    }
-
-    if gctx.shell().confirm(format!("Create the worktree from `{}` instead?", repo.default_branch))? {
-        Ok(Some(repo.default_branch.clone()))
-    } else {
-        Err(CliError::from("worktree creation cancelled"))
-    }
-}
-
 fn required<'a>(args: &'a ArgMatches, name: &str) -> Result<&'a str, CliError> {
     args.get_one::<String>(name).map(String::as_str).ok_or_else(|| CliError::from(format!("missing required argument `{name}`")))
 }
@@ -857,22 +805,9 @@ fn required_many<'a>(args: &'a ArgMatches, name: &str) -> Result<Vec<&'a str>, C
         .ok_or_else(|| CliError::from(format!("missing required argument `{name}`")))
 }
 
-fn path_arg(path: &Path) -> String {
-    path.to_string_lossy().to_string()
-}
-
-fn worktree_add_existing_branch_args<'a>(target: &'a str, branch: &'a str) -> Vec<&'a str> {
-    vec!["worktree", "add", target, branch]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn existing_local_branch_worktree_add_reuses_branch() {
-        assert_eq!(worktree_add_existing_branch_args("/tmp/example", "feature"), vec!["worktree", "add", "/tmp/example", "feature"]);
-    }
 
     #[test]
     fn worktree_subcommands_have_exec_handlers() {

@@ -44,6 +44,18 @@ pub struct RemoveOptions<'a> {
     pub session_name: String,
 }
 
+pub struct NewOptions<'a> {
+    pub base: &'a Path,
+    pub current: &'a Path,
+    pub default_branch: &'a str,
+    pub name: &'a str,
+    pub branch: &'a str,
+    pub fetch: bool,
+    pub submodules: bool,
+    pub tmux: bool,
+    pub session_name: String,
+}
+
 pub fn path(gctx: &mut GlobalContext, options: &PathOptions<'_>) -> CliResult {
     let path = if options.name == options.default_branch { options.base.to_path_buf() } else { target_dir(options.base, options.name) };
     gctx.shell().note(path.display());
@@ -111,6 +123,45 @@ pub fn remove(gctx: &mut GlobalContext, options: &RemoveOptions<'_>) -> CliResul
         crate::utils::tmux::kill_session(gctx, &options.session_name)?;
     }
 
+    Ok(())
+}
+
+pub fn new(gctx: &mut GlobalContext, options: &NewOptions<'_>) -> CliResult {
+    let target = target_dir(options.base, options.name);
+    if target.exists() {
+        return Err(CliError::from(format!("worktree already exists: {}", target.display())));
+    }
+
+    if options.fetch {
+        let _ = crate::utils::git::run(options.base, &["fetch", "origin", options.branch]);
+    }
+
+    let target_arg = path_arg(&target);
+    if crate::utils::git::local_branch_exists(options.base, options.branch)? {
+        let args = worktree_add_existing_branch_args(target_arg.as_str(), options.branch);
+        crate::utils::git::run(options.base, &args)?;
+    } else if crate::utils::git::remote_branch_exists(options.base, "origin", options.branch)? {
+        crate::utils::git::run(options.base, &["worktree", "add", target_arg.as_str(), "-b", options.branch, &format!("origin/{}", options.branch)])?;
+    } else {
+        let start_point = confirm_default_source_branch(gctx, options)?;
+        if let Some(start_point) = start_point {
+            crate::utils::git::run(options.base, &["worktree", "add", target_arg.as_str(), "-b", options.branch, &start_point])?;
+        } else {
+            crate::utils::git::run(options.base, &["worktree", "add", target_arg.as_str(), "-b", options.branch])?;
+        }
+    }
+
+    if options.submodules {
+        crate::utils::git::run(&target, &["submodule", "update", "--init", "--recursive"])?;
+    }
+
+    sync(gctx, &SyncOptions { base: options.base, current: options.current, worktrees: vec![target.clone()], quiet: true, force: false })?;
+
+    if options.tmux {
+        crate::utils::tmux::ensure_session(gctx, &options.session_name, &target)?;
+    }
+
+    gctx.shell().note(target.display());
     Ok(())
 }
 
@@ -376,6 +427,32 @@ fn path_arg(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
 
+fn worktree_add_existing_branch_args<'a>(target: &'a str, branch: &'a str) -> Vec<&'a str> {
+    vec!["worktree", "add", target, branch]
+}
+
+fn confirm_default_source_branch(gctx: &mut GlobalContext, options: &NewOptions<'_>) -> Result<Option<String>, CliError> {
+    let current_branch = crate::utils::git::current_branch(options.base)?;
+    if current_branch.as_deref() == Some(options.default_branch) {
+        return Ok(None);
+    }
+
+    let current_branch = current_branch.unwrap_or_else(|| "detached HEAD".to_string());
+    gctx.shell().warn(format!(
+        "base worktree is on `{current_branch}`, not the default branch `{}`; the new worktree will branch from the current base HEAD",
+        options.default_branch
+    ));
+    if gctx.shell().confirm("Continue creating the worktree?")? {
+        return Ok(None);
+    }
+
+    if gctx.shell().confirm(format!("Create the worktree from `{}` instead?", options.default_branch))? {
+        Ok(Some(options.default_branch.to_string()))
+    } else {
+        Err(CliError::from("worktree creation cancelled"))
+    }
+}
+
 fn target_dir(base: &Path, name: &str) -> PathBuf {
     PathBuf::from(format!("{}-{name}", base.display()))
 }
@@ -434,5 +511,10 @@ linked = ["z.env", "./a.env", "z.env"]
             branch_delete_preflight_message("feature"),
             "local branch `feature` is not fully merged; pass --force to delete it anyway or --keep-branch to remove only the worktree"
         );
+    }
+
+    #[test]
+    fn existing_local_branch_worktree_add_reuses_branch() {
+        assert_eq!(worktree_add_existing_branch_args("/tmp/example", "feature"), vec!["worktree", "add", "/tmp/example", "feature"]);
     }
 }
