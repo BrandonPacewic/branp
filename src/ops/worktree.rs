@@ -54,10 +54,16 @@ pub struct SyncOptions<'a> {
 
 pub struct RemoveOptions<'a> {
     pub base: &'a Path,
+    pub current: &'a Path,
+    pub cwd: &'a Path,
+    pub home: &'a Path,
     pub name: &'a str,
     pub force: bool,
     pub delete_branch: bool,
     pub tmux: bool,
+    pub dry_run: bool,
+    pub include_dirty: bool,
+    pub include_in_use: bool,
     pub session_name: String,
 }
 
@@ -96,10 +102,22 @@ pub struct GoneOptions<'a> {
     pub tmux: bool,
 }
 
+#[derive(Clone)]
 struct Worktree {
     path: PathBuf,
     head: Option<String>,
     branch: Option<String>,
+}
+
+struct ResolvedRemoveTarget {
+    path: PathBuf,
+    worktree: Worktree,
+    scratch: bool,
+}
+
+struct ScratchRemoveInspection {
+    changes: Vec<String>,
+    in_use: crate::utils::in_use::InUseInspection,
 }
 
 pub struct Repo {
@@ -187,22 +205,57 @@ pub fn sync(gctx: &mut GlobalContext, options: &SyncOptions<'_>) -> CliResult {
 }
 
 pub fn remove(gctx: &mut GlobalContext, options: &RemoveOptions<'_>) -> CliResult {
-    let target = target_dir(options.base, options.name);
-    if !target.is_dir() {
-        return Err(CliError::from(format!("worktree not found: {}", target.display())));
+    let registered = worktrees(options.base)?;
+    let target = resolve_remove_target(options, &registered)?;
+    let session_name = remove_session_name(options, &target.path);
+
+    if target.scratch {
+        let inspection = inspect_scratch_removal(&target.path, &session_name)?;
+        if options.dry_run {
+            render_scratch_remove_preview(gctx, &target.path, &inspection);
+            return Ok(());
+        }
+
+        let mut refusals = Vec::new();
+        if !inspection.changes.is_empty() && !options.include_dirty {
+            refusals.push(format!("dirty changes: {} (pass --include-dirty)", inspection.changes.join(", ")));
+        }
+        if inspection.in_use.is_in_use() && !options.include_in_use {
+            refusals.push(format!("in use: {} (pass --include-in-use)", inspection.in_use.reasons().join(", ")));
+        }
+        if !refusals.is_empty() {
+            return Err(CliError::from(format!("cannot remove scratch worktree {}: {}", target.path.display(), refusals.join("; "))));
+        }
+
+        let target_has_submodules = has_submodules(&target.path);
+        deinit_submodules(gctx, &target.path)?;
+        let target_arg = path_arg(&target.path);
+        let remove_args = worktree_remove_args(target_arg.as_str(), false, options.include_dirty, target_has_submodules);
+        crate::utils::git::run(options.base, &remove_args)?;
+        crate::utils::git::run(options.base, &["worktree", "prune"])?;
+
+        if options.tmux {
+            crate::utils::tmux::kill_session(gctx, &session_name)?;
+        }
+        return Ok(());
     }
 
-    let branch = crate::utils::git::current_branch(&target)?;
+    let branch = target.worktree.branch.clone();
     if options.delete_branch {
         if let Some(branch) = &branch {
             preflight_branch_delete(options.base, branch, options.force)?;
         }
     }
-    let target_has_submodules = has_submodules(&target);
-    let confirmed_lossy_remove = confirm_lossy_remove(gctx, &target)?;
-    deinit_submodules(gctx, &target)?;
+    if options.dry_run {
+        render_named_remove_preview(gctx, &target.path, branch.as_deref(), options.delete_branch);
+        return Ok(());
+    }
 
-    let target_arg = path_arg(&target);
+    let target_has_submodules = has_submodules(&target.path);
+    let confirmed_lossy_remove = confirm_lossy_remove(gctx, &target.path)?;
+    deinit_submodules(gctx, &target.path)?;
+
+    let target_arg = path_arg(&target.path);
     let remove_args = worktree_remove_args(target_arg.as_str(), options.force, confirmed_lossy_remove, target_has_submodules);
     crate::utils::git::run(options.base, &remove_args)?;
     crate::utils::git::run(options.base, &["worktree", "prune"])?;
@@ -214,10 +267,127 @@ pub fn remove(gctx: &mut GlobalContext, options: &RemoveOptions<'_>) -> CliResul
     }
 
     if options.tmux {
-        crate::utils::tmux::kill_session(gctx, &options.session_name)?;
+        crate::utils::tmux::kill_session(gctx, &session_name)?;
     }
 
     Ok(())
+}
+
+fn resolve_remove_target(options: &RemoveOptions<'_>, registered: &[Worktree]) -> Result<ResolvedRemoveTarget, CliError> {
+    let input = Path::new(options.name);
+    let matches: Vec<_> = registered.iter().filter(|worktree| remove_input_matches(options, input, &worktree.path)).cloned().collect();
+
+    if matches.len() > 1 {
+        let paths = matches.iter().map(|worktree| worktree.path.display().to_string()).collect::<Vec<_>>().join(", ");
+        return Err(CliError::from(format!("ambiguous worktree target `{}`; matches: {paths}; use an exact path", options.name)));
+    }
+
+    let Some(worktree) = matches.into_iter().next() else {
+        if input.components().count() == 1 && crate::utils::git::current_branch(options.base).ok().flatten().as_deref() == Some(options.name) {
+            return Err(CliError::from(format!(
+                "refusing to remove the base worktree {}; target `{}` names its current branch",
+                options.base.display(),
+                options.name
+            )));
+        }
+        return Err(CliError::from(format!("worktree target `{}` is not registered; use an exact registered worktree name or path", options.name)));
+    };
+
+    let path = worktree.path.clone();
+    if same_worktree_path(&path, options.base) {
+        return Err(CliError::from(format!("refusing to remove the base worktree {}", path.display())));
+    }
+
+    let scratch_root = scratch_dir(options.home).canonicalize().ok();
+    let path_for_checks = path.canonicalize().unwrap_or_else(|_| path.clone());
+    if let Some(root) = scratch_root {
+        if path_for_checks.starts_with(&root) {
+            if path_for_checks.parent() != Some(root.as_path()) {
+                return Err(CliError::from(format!(
+                    "refusing to remove {}; scratch worktrees must be directly under {}",
+                    path.display(),
+                    root.display()
+                )));
+            }
+
+            let name = path_for_checks.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+            if !name.starts_with("scratch-") {
+                return Err(CliError::from(format!(
+                    "refusing to remove {}; registered worktree under {} is not clearly identifiable as scratch",
+                    path.display(),
+                    root.display()
+                )));
+            }
+            if worktree.branch.is_some() {
+                return Err(CliError::from(format!("refusing to remove {}; scratch worktrees must be detached", path.display())));
+            }
+
+            return Ok(ResolvedRemoveTarget { path, worktree, scratch: true });
+        }
+    }
+
+    Ok(ResolvedRemoveTarget { path, worktree, scratch: false })
+}
+
+fn remove_input_matches(options: &RemoveOptions<'_>, input: &Path, registered: &Path) -> bool {
+    let mut candidates = Vec::new();
+    if input.is_absolute() {
+        candidates.push(input.to_path_buf());
+    } else {
+        candidates.push(options.cwd.join(input));
+        candidates.push(options.current.join(input));
+        if input.components().count() == 1 {
+            if let Some(name) = input.to_str() {
+                candidates.push(target_dir(options.base, name));
+                candidates.push(scratch_dir(options.home).join(name));
+            }
+        }
+    }
+
+    candidates.into_iter().any(|candidate| same_worktree_path(&candidate, registered))
+}
+
+fn inspect_scratch_removal(path: &Path, session_name: &str) -> Result<ScratchRemoveInspection, CliError> {
+    let mut in_use = crate::utils::in_use::inspect(path, Some(session_name))?;
+    in_use.processes.retain(|process| process.pid != std::process::id());
+    Ok(ScratchRemoveInspection { changes: removal_risk_changes(path)?, in_use })
+}
+
+fn render_scratch_remove_preview(gctx: &mut GlobalContext, path: &Path, inspection: &ScratchRemoveInspection) {
+    gctx.shell().note(format!("dry-run: would remove scratch worktree {}", path.display()));
+    gctx.shell().note("protection: dirty changes require --include-dirty");
+    gctx.shell().note("protection: in-use processes or tmux sessions require --include-in-use");
+    gctx.shell().note("branch deletion: skipped because scratch worktrees are detached");
+    if inspection.changes.is_empty() {
+        gctx.shell().note("state: clean");
+    } else {
+        gctx.shell().note(format!("state: dirty ({})", inspection.changes.join(", ")));
+    }
+    if inspection.in_use.is_in_use() {
+        gctx.shell().note(format!("state: in-use ({})", inspection.in_use.reasons().join(", ")));
+    } else {
+        gctx.shell().note("state: available");
+    }
+}
+
+fn render_named_remove_preview(gctx: &mut GlobalContext, path: &Path, branch: Option<&str>, delete_branch: bool) {
+    gctx.shell().note(format!("dry-run: would remove named worktree {}", path.display()));
+    if delete_branch {
+        if let Some(branch) = branch {
+            gctx.shell().note(format!("branch deletion: would delete local branch `{branch}`"));
+        } else {
+            gctx.shell().note("branch deletion: none (worktree is detached)");
+        }
+    } else {
+        gctx.shell().note("branch deletion: skipped by --keep-branch");
+    }
+}
+
+fn remove_session_name(options: &RemoveOptions<'_>, path: &Path) -> String {
+    name_from_worktree_path(options.base, path)
+        .or_else(|| path.file_name().and_then(|name| name.to_str()).map(str::to_string))
+        .map(|name| session_name_for(options.base, &name))
+        .unwrap_or_else(|| options.session_name.clone())
 }
 
 pub fn new(gctx: &mut GlobalContext, options: &NewOptions<'_>) -> CliResult {
@@ -357,10 +527,16 @@ pub fn gone(gctx: &mut GlobalContext, options: &GoneOptions<'_>) -> CliResult {
                 gctx,
                 &RemoveOptions {
                     base: options.base,
+                    current: options.base,
+                    cwd: options.base,
+                    home: options.base,
                     name: &name,
                     force: options.force,
                     delete_branch: true,
                     tmux: options.tmux,
+                    dry_run: false,
+                    include_dirty: false,
+                    include_in_use: false,
                     session_name: session_name_for(options.base, &name),
                 },
             )?;
@@ -1484,6 +1660,34 @@ linked = ["z.env", "./a.env", "z.env"]
     #[test]
     fn scratch_target_uses_a_dedicated_user_directory() {
         assert_eq!(scratch_dir(Path::new("/tmp/home")), PathBuf::from("/tmp/home/.bp/worktrees"));
+    }
+
+    #[test]
+    fn remove_resolves_only_an_exact_registered_detached_scratch_target() {
+        let home = std::env::temp_dir().join(format!("branp-remove-target-{}", std::process::id()));
+        let scratch = scratch_dir(&home).join("scratch-test");
+        fs::create_dir_all(&scratch).unwrap();
+        let options = RemoveOptions {
+            base: Path::new("/tmp/repo"),
+            current: Path::new("/tmp/repo"),
+            cwd: Path::new("/tmp/repo"),
+            home: &home,
+            name: "scratch-test",
+            force: false,
+            delete_branch: true,
+            tmux: false,
+            dry_run: false,
+            include_dirty: false,
+            include_in_use: false,
+            session_name: "repo-scratch-test".to_string(),
+        };
+        let registered = vec![Worktree { path: scratch.clone(), head: None, branch: None }];
+
+        let resolved = resolve_remove_target(&options, &registered).unwrap();
+        assert!(resolved.scratch);
+        assert_eq!(resolved.path, scratch);
+
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

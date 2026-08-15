@@ -245,6 +245,134 @@ fn worktree_remove_deletes_clean_worktree_and_branch() {
     assert_eq!(stdout(&repo.git(["branch", "--list", "feature"])), "");
 }
 
+#[test]
+fn worktree_remove_resolves_exact_scratch_name_and_path_without_deleting_branches() {
+    let workspace = TestWorkspace::new("worktree-remove-scratch-targets");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    repo.git(["branch", "feature"]);
+
+    let home = repo.sibling("nested/home");
+    let by_name = add_detached_scratch(&repo, &home, "scratch-by-name");
+    let by_path = add_detached_scratch(&repo, &home, "scratch-by-path");
+
+    let output = repo.bp_with_env(["worktree", "remove", "scratch-by-name", "--no-tmux"], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&output, "remove scratch by exact name");
+    assert!(!by_name.exists());
+
+    let output = repo.bp_with_env(["worktree", "remove", by_path.to_str().unwrap(), "--no-tmux"], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&output, "remove scratch by exact path");
+    assert!(!by_path.exists());
+    assert_eq!(stdout(&repo.git(["branch", "--list", "feature"])), "  feature\n");
+}
+
+#[test]
+fn worktree_remove_dry_run_reports_target_and_scratch_protections() {
+    let workspace = TestWorkspace::new("worktree-remove-dry-run");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    let home = repo.sibling("home");
+    let scratch = add_detached_scratch(&repo, &home, "scratch-preview");
+
+    let output = repo.bp_with_env(["worktree", "remove", scratch.to_str().unwrap(), "--dry-run", "--no-tmux"], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&output, "preview scratch removal");
+    let text = stdout(&output);
+    assert!(text.contains("dry-run: would remove scratch worktree"), "preview omitted operation:\n{text}");
+    assert!(text.contains(&scratch.display().to_string()), "preview omitted exact target:\n{text}");
+    assert!(text.contains("--include-dirty"), "preview omitted dirty protection:\n{text}");
+    assert!(text.contains("--include-in-use"), "preview omitted in-use protection:\n{text}");
+    assert!(text.contains("branch deletion: skipped"), "preview omitted detached branch protection:\n{text}");
+    assert!(scratch.is_dir(), "dry run changed the scratch path");
+    assert!(stdout(&repo.git(["worktree", "list", "--porcelain"])).contains(scratch.to_str().unwrap()));
+}
+
+#[test]
+fn worktree_remove_refuses_dirty_scratch_until_dirty_override_is_explicit() {
+    let workspace = TestWorkspace::new("worktree-remove-dirty");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    let home = repo.sibling("home");
+    let scratch = add_detached_scratch(&repo, &home, "scratch-dirty");
+    fs::write(scratch.join("file.txt"), "dirty\n").unwrap();
+    fs::write(scratch.join("untracked.txt"), "untracked\n").unwrap();
+
+    let refused = repo.bp_with_env(["worktree", "remove", scratch.to_str().unwrap(), "--no-tmux"], &[("HOME", home.to_str().unwrap())]);
+    assert!(!refused.status.success(), "dirty scratch removal unexpectedly succeeded");
+    assert!(stderr(&refused).contains("--include-dirty"), "refusal omitted dirty override:\n{}", stderr(&refused));
+    assert!(scratch.is_dir());
+
+    let removed =
+        repo.bp_with_env(["worktree", "remove", scratch.to_str().unwrap(), "--include-dirty", "--no-tmux"], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&removed, "remove dirty scratch with explicit override");
+    assert!(!scratch.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn worktree_remove_refuses_in_use_scratch_until_in_use_override_is_explicit() {
+    let workspace = TestWorkspace::new("worktree-remove-in-use");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    let home = repo.sibling("home");
+    let scratch = add_detached_scratch(&repo, &home, "scratch-in-use");
+
+    let mut child =
+        Command::new("sleep").arg("30").current_dir(&scratch).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let refused = (0..80).find_map(|_| {
+        let output = repo.bp_with_env(["worktree", "remove", scratch.to_str().unwrap(), "--no-tmux"], &[("HOME", home.to_str().unwrap())]);
+        if !output.status.success() && stderr(&output).contains("--include-in-use") {
+            Some(output)
+        } else {
+            thread::sleep(Duration::from_millis(25));
+            None
+        }
+    });
+    let Some(refused) = refused else {
+        child.kill().unwrap();
+        child.wait().unwrap();
+        panic!("in-use scratch removal did not report a refusal");
+    };
+    assert!(stderr(&refused).contains("sleep"), "refusal omitted process detail:\n{}", stderr(&refused));
+    assert!(scratch.is_dir());
+
+    let removed =
+        repo.bp_with_env(["worktree", "remove", scratch.to_str().unwrap(), "--include-in-use", "--no-tmux"], &[("HOME", home.to_str().unwrap())]);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_success(&removed, "remove in-use scratch with explicit override");
+    assert!(!scratch.exists());
+}
+
+#[test]
+fn worktree_remove_refuses_unregistered_base_named_missing_and_ambiguous_targets() {
+    let workspace = TestWorkspace::new("worktree-remove-target-refusals");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    repo.git(["branch", "feature"]);
+    repo.git(["branch", "scratch-collision"]);
+    let named = repo.sibling("feature");
+    repo.git(["worktree", "add", named.to_str().unwrap(), "feature"]);
+    let home = repo.sibling("home");
+    let collision = add_detached_scratch(&repo, &home, "scratch-collision");
+    let named_collision = repo.sibling("scratch-collision");
+    repo.git(["worktree", "add", named_collision.to_str().unwrap(), "scratch-collision"]);
+
+    let base = repo.bp(["worktree", "remove", "mega", "--no-tmux"]);
+    assert!(!base.status.success());
+    assert!(stderr(&base).contains("base worktree"));
+
+    let missing = repo.bp(["worktree", "remove", "scratch-missing", "--no-tmux"]);
+    assert!(!missing.status.success());
+    assert!(stderr(&missing).contains("not registered"));
+
+    let ambiguous = repo.bp_with_env(["worktree", "remove", "scratch-collision", "--no-tmux"], &[("HOME", home.to_str().unwrap())]);
+    assert!(!ambiguous.status.success());
+    assert!(stderr(&ambiguous).contains("ambiguous"));
+    assert!(collision.is_dir());
+    assert!(named.is_dir());
+    assert!(named_collision.is_dir());
+}
+
 #[cfg(unix)]
 #[test]
 fn worktree_list_reports_process_use_without_matching_a_sibling_worktree() {

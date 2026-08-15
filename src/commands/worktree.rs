@@ -79,10 +79,19 @@ fn return_cli() -> Command {
 fn remove_cli() -> Command {
     Command::new("remove")
         .alias("rm")
-        .about("Remove a sibling worktree and its local branch")
-        .arg(Arg::new("name").required(true).value_name("NAME"))
+        .about("Remove a named or scratch worktree")
+        .arg(Arg::new("name").required(true).value_name("NAME|PATH"))
         .arg(Arg::new("force").short('f').long("force").help("Force worktree removal and branch deletion").action(ArgAction::SetTrue))
         .arg(Arg::new("keep-branch").long("keep-branch").help("Do not delete the local branch").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("dry-run")
+                .short('n')
+                .long("dry-run")
+                .help("Preview the exact worktree and protections without changing the repository")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(Arg::new("include-dirty").long("include-dirty").help("Allow destruction of a dirty scratch worktree").action(ArgAction::SetTrue))
+        .arg(Arg::new("include-in-use").long("include-in-use").help("Allow destruction of an in-use scratch worktree").action(ArgAction::SetTrue))
         .arg(Arg::new("no-tmux").long("no-tmux").help("Do not kill the matching tmux session").action(ArgAction::SetTrue))
 }
 
@@ -171,15 +180,23 @@ fn return_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
 
 fn remove_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let repo = ops::Repo::discover(gctx.cwd())?;
+    let cwd = gctx.cwd().clone();
+    let home = gctx.home().clone();
     let name = required(args, "name")?;
     ops::remove(
         gctx,
         &ops::RemoveOptions {
             base: &repo.base,
+            current: &repo.current,
+            cwd: &cwd,
+            home: &home,
             name,
             force: args.get_flag("force"),
             delete_branch: !args.get_flag("keep-branch"),
             tmux: !args.get_flag("no-tmux"),
+            dry_run: args.get_flag("dry-run"),
+            include_dirty: args.get_flag("include-dirty"),
+            include_in_use: args.get_flag("include-in-use"),
             session_name: repo.session_name(name),
         },
     )
