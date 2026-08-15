@@ -19,7 +19,7 @@ pub const BUILTIN_ALIASES: &[BuiltinAlias] = &[
     BuiltinAlias { alias: "wt", command: "worktree" },
 ];
 
-pub fn branp() -> Vec<Command> {
+pub fn builtin() -> Vec<Command> {
     vec![
         with_builtin_aliases(cloc::command()),
         with_builtin_aliases(completion::command()),
@@ -45,7 +45,7 @@ fn with_builtin_aliases(mut command: Command) -> Command {
 
 pub type Exec = fn(&mut GlobalContext, &ArgMatches) -> CliResult;
 
-pub fn branp_exec(cmd: &str) -> Option<Exec> {
+pub fn builtin_exec(cmd: &str) -> Option<Exec> {
     let exec = match cmd {
         "cloc" => cloc::exec,
         "completion" => completion::exec,
@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn builtin_aliases_are_registered_with_clap_commands() {
-        let command = branp().into_iter().find(|command| command.get_name() == "worktree").expect("worktree command");
+        let command = builtin().into_iter().find(|command| command.get_name() == "worktree").expect("worktree command");
 
         assert!(command.get_all_aliases().any(|alias| alias == "wt"));
     }

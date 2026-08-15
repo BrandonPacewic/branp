@@ -61,13 +61,13 @@ fn run(gctx: &mut GlobalContext) -> CliResult {
 }
 
 enum Exec {
-    Branp(commands::Exec),
+    Builtin(commands::Exec),
 }
 
 impl Exec {
     fn infer(cmd: &str) -> Result<Self, CliError> {
-        if let Some(exec) = commands::branp_exec(cmd) {
-            Ok(Self::Branp(exec))
+        if let Some(exec) = commands::builtin_exec(cmd) {
+            Ok(Self::Builtin(exec))
         } else {
             Err(CliError::new(format!("`{cmd}` is not a valid subcommand"), 1))
         }
@@ -75,7 +75,7 @@ impl Exec {
 
     fn exec(self, gctx: &mut context::GlobalContext, subcommand_args: &ArgMatches) -> CliResult {
         match self {
-            Self::Branp(exec) => exec(gctx, subcommand_args),
+            Self::Builtin(exec) => exec(gctx, subcommand_args),
         }
     }
 }
@@ -94,7 +94,7 @@ impl GlobalArgs {
 
 fn expand_aliases(gctx: &mut GlobalContext, args: ArgMatches, mut already_expanded: Vec<String>) -> Result<(ArgMatches, GlobalArgs), CliError> {
     if let Some((cmd, subcommand_args)) = args.subcommand() {
-        let exec = commands::branp_exec(cmd);
+        let exec = commands::builtin_exec(cmd);
         let aliased_cmd = commands::aliased_command(cmd);
 
         match (exec, aliased_cmd) {
@@ -185,5 +185,5 @@ fn branp() -> Command {
         .arg(Arg::new("version").short('V').long("version").help("Print version info and exit").action(ArgAction::SetTrue))
         .arg(Arg::new("verbose").short('v').long("verbose").help("Use verbose output (-vv very verbose)").action(ArgAction::Count).global(true))
         .arg(Arg::new("quiet").short('q').long("quiet").help("Do not print log messages or output").action(ArgAction::SetTrue).global(true))
-        .subcommands(commands::branp())
+        .subcommands(commands::builtin())
 }
