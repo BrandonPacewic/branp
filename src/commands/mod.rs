@@ -49,8 +49,8 @@ pub fn builtin_exec(cmd: &str) -> Option<Exec> {
     let exec = match cmd {
         "cloc" => cloc::exec,
         "completion" => completion::exec,
-        "dbrun" => dbrun::exec,
         "doctor" => doctor::exec,
+        "dbrun" => dbrun::exec,
         "sample-gen" => sample_gen::exec,
         "test-samples" => test_samples::exec,
         "format" => format::exec,
@@ -64,12 +64,12 @@ pub fn builtin_exec(cmd: &str) -> Option<Exec> {
     Some(exec)
 }
 
-pub fn builtin_aliases_execs(cmd: &str) -> Option<&'static BuiltinAlias> {
+pub fn builtin_alias(cmd: &str) -> Option<&'static BuiltinAlias> {
     BUILTIN_ALIASES.iter().find(|alias| alias.alias == cmd)
 }
 
 pub fn aliased_command(command: &str) -> Option<Vec<String>> {
-    builtin_aliases_execs(command).map(|alias| vec![alias.command.to_string()])
+    builtin_alias(command).map(|alias| vec![alias.command.to_string()])
 }
 
 pub mod cloc;
