@@ -10,7 +10,7 @@ pub fn cli() -> Command {
     Command::new("worktree").about("Manage sibling Git worktrees").subcommand_required(true).arg_required_else_help(true).subcommands(builtin())
 }
 
-type WorktreeExec = fn(&mut GlobalContext, &ops::Repo, &ArgMatches) -> CliResult;
+type WorktreeExec = fn(&mut GlobalContext, &ArgMatches) -> CliResult;
 
 fn builtin() -> Vec<Command> {
     vec![list_cli(), path_cli(), new_cli(), remove_cli(), prune_cli(), gone_cli(), track_cli(), links_cli(), sync_cli()]
@@ -34,11 +34,9 @@ fn builtin_exec(cmd: &str) -> Option<WorktreeExec> {
 }
 
 pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
-    let repo = ops::Repo::discover(gctx.cwd())?;
-
     if let Some((cmd, sub)) = args.subcommand() {
         if let Some(exec) = builtin_exec(cmd) {
-            return exec(gctx, &repo, sub);
+            return exec(gctx, sub);
         }
     }
 
@@ -107,15 +105,18 @@ fn sync_cli() -> Command {
         .arg(Arg::new("force").short('f').long("force").help("Replace existing non-symlink paths").action(ArgAction::SetTrue))
 }
 
-fn list_exec(gctx: &mut GlobalContext, repo: &ops::Repo, args: &ArgMatches) -> CliResult {
+fn list_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
+    let repo = ops::Repo::discover(gctx.cwd())?;
     ops::list(gctx, &ops::ListOptions { base: &repo.base, default_branch: &repo.default_branch, pr_lookup: !args.get_flag("no-pr") })
 }
 
-fn path_exec(gctx: &mut GlobalContext, repo: &ops::Repo, args: &ArgMatches) -> CliResult {
+fn path_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
+    let repo = ops::Repo::discover(gctx.cwd())?;
     ops::path(gctx, &ops::PathOptions { base: &repo.base, default_branch: &repo.default_branch, name: required(args, "name")? })
 }
 
-fn new_exec(gctx: &mut GlobalContext, repo: &ops::Repo, args: &ArgMatches) -> CliResult {
+fn new_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
+    let repo = ops::Repo::discover(gctx.cwd())?;
     let name = required(args, "name")?;
     let branch = args.get_one::<String>("branch").map_or(name, String::as_str);
     ops::new(
@@ -134,7 +135,8 @@ fn new_exec(gctx: &mut GlobalContext, repo: &ops::Repo, args: &ArgMatches) -> Cl
     )
 }
 
-fn remove_exec(gctx: &mut GlobalContext, repo: &ops::Repo, args: &ArgMatches) -> CliResult {
+fn remove_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
+    let repo = ops::Repo::discover(gctx.cwd())?;
     let name = required(args, "name")?;
     ops::remove(
         gctx,
@@ -149,11 +151,13 @@ fn remove_exec(gctx: &mut GlobalContext, repo: &ops::Repo, args: &ArgMatches) ->
     )
 }
 
-fn prune_exec(_gctx: &mut GlobalContext, repo: &ops::Repo, _args: &ArgMatches) -> CliResult {
+fn prune_exec(gctx: &mut GlobalContext, _args: &ArgMatches) -> CliResult {
+    let repo = ops::Repo::discover(gctx.cwd())?;
     ops::prune(&repo.base)
 }
 
-fn gone_exec(gctx: &mut GlobalContext, repo: &ops::Repo, args: &ArgMatches) -> CliResult {
+fn gone_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
+    let repo = ops::Repo::discover(gctx.cwd())?;
     ops::gone(
         gctx,
         &ops::GoneOptions {
@@ -166,7 +170,8 @@ fn gone_exec(gctx: &mut GlobalContext, repo: &ops::Repo, args: &ArgMatches) -> C
     )
 }
 
-fn track_exec(gctx: &mut GlobalContext, repo: &ops::Repo, args: &ArgMatches) -> CliResult {
+fn track_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
+    let repo = ops::Repo::discover(gctx.cwd())?;
     ops::track(
         gctx,
         &ops::TrackOptions {
@@ -179,11 +184,13 @@ fn track_exec(gctx: &mut GlobalContext, repo: &ops::Repo, args: &ArgMatches) -> 
     )
 }
 
-fn links_exec(gctx: &mut GlobalContext, repo: &ops::Repo, _args: &ArgMatches) -> CliResult {
+fn links_exec(gctx: &mut GlobalContext, _args: &ArgMatches) -> CliResult {
+    let repo = ops::Repo::discover(gctx.cwd())?;
     ops::links(gctx, &ops::LinksOptions { base: &repo.base, current: &repo.current })
 }
 
-fn sync_exec(gctx: &mut GlobalContext, repo: &ops::Repo, args: &ArgMatches) -> CliResult {
+fn sync_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
+    let repo = ops::Repo::discover(gctx.cwd())?;
     ops::sync(
         gctx,
         &ops::SyncOptions {
