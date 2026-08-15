@@ -82,16 +82,18 @@ pub struct Worktree {
 pub struct Repo {
     pub base: PathBuf,
     pub current: PathBuf,
-    pub default_branch: String,
 }
 
 impl Repo {
     pub fn discover(cwd: &Path) -> Result<Self, CliError> {
         let root = PathBuf::from(crate::utils::git::output(cwd, &["rev-parse", "--show-toplevel"])?.trim());
         let base = worktrees(&root)?.into_iter().next().map(|w| w.path).ok_or("could not determine base worktree")?;
-        let default_branch = crate::utils::git::default_branch(&base, "origin")?;
 
-        Ok(Self { base, current: root, default_branch })
+        Ok(Self { base, current: root })
+    }
+
+    pub fn default_branch(&self) -> Result<String, CliError> {
+        crate::utils::git::default_branch(&self.base, "origin")
     }
 
     pub fn session_name(&self, name: &str) -> String {

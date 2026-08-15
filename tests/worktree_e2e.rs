@@ -48,3 +48,16 @@ fn worktree_remove_deletes_clean_worktree_and_branch() {
     assert!(!worktree.exists(), "expected worktree to be removed from {}", worktree.display());
     assert_eq!(stdout(&repo.git(["branch", "--list", "feature"])), "");
 }
+
+#[test]
+fn worktree_prune_does_not_require_default_branch_discovery() {
+    let workspace = TestWorkspace::new("worktree-prune-detached-without-default");
+    let repo = workspace.git_repo("repo", "mega");
+
+    repo.commit_file("file.txt", "base\n", "initial");
+    repo.git(["config", "--unset-all", "branp.worktree.defaultBranch"]);
+    repo.git(["switch", "--detach", "HEAD"]);
+
+    let output = repo.bp(["worktree", "prune"]);
+    assert_success(&output, "bp worktree prune");
+}

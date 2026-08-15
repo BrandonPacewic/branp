@@ -107,16 +107,19 @@ fn sync_cli() -> Command {
 
 fn list_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let repo = ops::Repo::discover(gctx.cwd())?;
-    ops::list(gctx, &ops::ListOptions { base: &repo.base, default_branch: &repo.default_branch, pr_lookup: !args.get_flag("no-pr") })
+    let default_branch = repo.default_branch()?;
+    ops::list(gctx, &ops::ListOptions { base: &repo.base, default_branch: &default_branch, pr_lookup: !args.get_flag("no-pr") })
 }
 
 fn path_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let repo = ops::Repo::discover(gctx.cwd())?;
-    ops::path(gctx, &ops::PathOptions { base: &repo.base, default_branch: &repo.default_branch, name: required(args, "name")? })
+    let default_branch = repo.default_branch()?;
+    ops::path(gctx, &ops::PathOptions { base: &repo.base, default_branch: &default_branch, name: required(args, "name")? })
 }
 
 fn new_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let repo = ops::Repo::discover(gctx.cwd())?;
+    let default_branch = repo.default_branch()?;
     let name = required(args, "name")?;
     let branch = args.get_one::<String>("branch").map_or(name, String::as_str);
     ops::new(
@@ -124,7 +127,7 @@ fn new_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
         &ops::NewOptions {
             base: &repo.base,
             current: &repo.current,
-            default_branch: &repo.default_branch,
+            default_branch: &default_branch,
             name,
             branch,
             fetch: !args.get_flag("no-fetch"),
@@ -158,11 +161,12 @@ fn prune_exec(gctx: &mut GlobalContext, _args: &ArgMatches) -> CliResult {
 
 fn gone_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let repo = ops::Repo::discover(gctx.cwd())?;
+    let default_branch = repo.default_branch()?;
     ops::gone(
         gctx,
         &ops::GoneOptions {
             base: &repo.base,
-            default_branch: &repo.default_branch,
+            default_branch: &default_branch,
             dry_run: args.get_flag("dry-run"),
             force: args.get_flag("force"),
             tmux: !args.get_flag("no-tmux"),
