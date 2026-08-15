@@ -24,20 +24,20 @@ The following tasks make those worktrees reusable and safely manageable.
 
 ### Return and Reuse
 
-- [ ] Detect available scratch worktrees before creating a new one.
-- [ ] Treat a scratch worktree as reusable only when it is clean, detached, valid, and not currently in use.
+- [x] Detect available scratch worktrees before creating a new one.
+- [x] Treat a scratch worktree as reusable only when it is clean, detached, valid, and not currently in use.
 - [x] Add a return operation that can infer the current worktree when invoked from inside it.
 - [x] Refuse to discard tracked or untracked changes without confirmation.
 - [x] On return, detach `HEAD`, remove tracked and ordinary untracked changes, and preserve ignored build caches and dependencies where possible.
 - [ ] Mark the returned scratch worktree available for the next no-argument `new` or `n` operation.
 - [x] Run normal worktree link synchronization and scratch setup after reuse.
-- [ ] Ensure two concurrent acquisitions cannot select the same scratch worktree.
+- [x] Ensure two concurrent acquisitions cannot select the same scratch worktree.
 
 ### In-Use Detection
 
 - [x] Detect processes whose working directory is inside a worktree.
 - [x] Detect active tmux sessions and other relevant local ownership signals.
-- [ ] Keep process use, short-lived lifecycle reservations, and durable leases as separate facts.
+- [x] Keep process use, short-lived lifecycle reservations, and durable leases as separate facts.
 - [ ] Refuse automatic reuse, return, or destruction while a worktree is in use unless an explicit override is provided.
 - [x] Show the process or session reason when a worktree is skipped.
 
