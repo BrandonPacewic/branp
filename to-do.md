@@ -10,11 +10,11 @@ Scratch-specific behavior must never silently reset or delete a named worktree.
 
 ## General Worktree Utilities
 
-- [ ] Make `bp worktree list` show every worktree with a stable name or path, branch or detached state, clean or dirty state, current or in-use state, and relevant tmux, process, remote, and pull-request information.
+- [x] Make `bp worktree list` show every worktree with a stable name or path, branch or detached state, clean or dirty state, current or in-use state, and relevant tmux, process, remote, and pull-request information.
 - [ ] Add a generic `bp worktree enter <NAME|PATH>` operation that opens an existing worktree without resetting it or changing its lifecycle state.
 - [ ] Make `bp worktree path <NAME|PATH>` work for base, named, and scratch worktrees and keep its output clean for shell integrations.
 - [ ] Add machine-readable output for worktree discovery and status.
-- [ ] Add generic process and active-session detection that can be reused by attach, return, remove, and prune operations.
+- [x] Add generic process and active-session detection that can be reused by attach, return, remove, and prune operations.
 - [ ] Define clear lifecycle states such as current, available, in-use, dirty, detached, leased, and unverified.
 
 ## Scratch Worktree Lifecycle
@@ -36,10 +36,10 @@ The following tasks make those worktrees reusable and safely manageable.
 ### In-Use Detection
 
 - [x] Detect processes whose working directory is inside a worktree.
-- [ ] Detect active tmux sessions and other relevant local ownership signals.
+- [x] Detect active tmux sessions and other relevant local ownership signals.
 - [ ] Keep process use, short-lived lifecycle reservations, and durable leases as separate facts.
 - [ ] Refuse automatic reuse, return, or destruction while a worktree is in use unless an explicit override is provided.
-- [ ] Show the process or session reason when a worktree is skipped.
+- [x] Show the process or session reason when a worktree is skipped.
 
 ### Removal and Destruction
 
