@@ -14,90 +14,146 @@ use crate::ops::worktree::LinkStore;
 use crate::utils::git;
 
 pub fn cli() -> Command {
-    Command::new("worktree")
-        .about("Manage sibling Git worktrees")
-        .subcommand_required(true)
-        .arg_required_else_help(true)
-        .subcommand(
-            Command::new("list")
-                .alias("ls")
-                .about("List Git worktrees")
-                .arg(Arg::new("no-pr").long("no-pr").help("Skip GitHub pull request lookup").action(ArgAction::SetTrue)),
-        )
-        .subcommand(
-            Command::new("path")
-                .about("Print the path for a worktree name, or the base worktree for the default branch")
-                .arg(Arg::new("name").required(true).value_name("NAME")),
-        )
-        .subcommand(
-            Command::new("new")
-                .about("Create a sibling worktree")
-                .arg(Arg::new("name").required(true).value_name("NAME"))
-                .arg(Arg::new("branch").value_name("BRANCH"))
-                .arg(Arg::new("no-fetch").long("no-fetch").help("Do not fetch origin before creating the worktree").action(ArgAction::SetTrue))
-                .arg(Arg::new("no-submodules").long("no-submodules").help("Skip submodule initialization").action(ArgAction::SetTrue))
-                .arg(Arg::new("no-tmux").long("no-tmux").help("Do not start a tmux session").action(ArgAction::SetTrue)),
-        )
-        .subcommand(
-            Command::new("remove")
-                .alias("rm")
-                .about("Remove a sibling worktree and its local branch")
-                .arg(Arg::new("name").required(true).value_name("NAME"))
-                .arg(Arg::new("force").short('f').long("force").help("Force worktree removal and branch deletion").action(ArgAction::SetTrue))
-                .arg(Arg::new("keep-branch").long("keep-branch").help("Do not delete the local branch").action(ArgAction::SetTrue))
-                .arg(Arg::new("no-tmux").long("no-tmux").help("Do not kill the matching tmux session").action(ArgAction::SetTrue)),
-        )
-        .subcommand(Command::new("prune").about("Run git worktree prune"))
-        .subcommand(
-            Command::new("gone")
-                .about("Remove sibling worktrees whose origin branch no longer exists")
-                .arg(Arg::new("dry-run").short('n').long("dry-run").help("Show what would be removed").action(ArgAction::SetTrue))
-                .arg(Arg::new("force").short('f').long("force").help("Force worktree removal and branch deletion").action(ArgAction::SetTrue))
-                .arg(Arg::new("no-tmux").long("no-tmux").help("Do not kill matching tmux sessions").action(ArgAction::SetTrue)),
-        )
-        .subcommand(
-            Command::new("track")
-                .about("Track untracked files that should be symlinked into every worktree")
-                .arg(Arg::new("path").required(true).num_args(1..).value_name("PATH"))
-                .arg(Arg::new("force").short('f').long("force").help("Replace existing files in other worktrees").action(ArgAction::SetTrue)),
-        )
-        .subcommand(Command::new("links").about("List files linked across worktrees"))
-        .subcommand(
-            Command::new("sync")
-                .about("Create or repair symlinks for files tracked in .branp/worktree.toml")
-                .arg(Arg::new("force").short('f').long("force").help("Replace existing non-symlink paths").action(ArgAction::SetTrue)),
-        )
+    Command::new("worktree").about("Manage sibling Git worktrees").subcommand_required(true).arg_required_else_help(true).subcommands(builtin())
+}
+
+type WorktreeExec = fn(&mut GlobalContext, &Repo, &ArgMatches) -> CliResult;
+
+fn builtin() -> Vec<Command> {
+    vec![list_cli(), path_cli(), new_cli(), remove_cli(), prune_cli(), gone_cli(), track_cli(), links_cli(), sync_cli()]
+}
+
+fn builtin_exec(cmd: &str) -> Option<WorktreeExec> {
+    let exec = match cmd {
+        "list" => list_exec,
+        "path" => path_exec,
+        "new" => new_exec,
+        "remove" => remove_exec,
+        "prune" => prune_exec,
+        "gone" => gone_exec,
+        "track" => track_exec,
+        "links" => links_exec,
+        "sync" => sync_exec,
+        _ => return None,
+    };
+
+    Some(exec)
 }
 
 pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let repo = Repo::discover(gctx.cwd())?;
 
-    match args.subcommand() {
-        Some(("list", sub)) => list(gctx, &repo, !sub.get_flag("no-pr")),
-        Some(("path", sub)) => {
-            let name = required(sub, "name")?;
-            let path = if name == repo.default_branch { repo.base.clone() } else { repo.target_dir(name) };
-            gctx.shell().note(path.display());
-            Ok(())
+    if let Some((cmd, sub)) = args.subcommand() {
+        if let Some(exec) = builtin_exec(cmd) {
+            return exec(gctx, &repo, sub);
         }
-        Some(("new", sub)) => {
-            let name = required(sub, "name")?;
-            let branch = sub.get_one::<String>("branch").map_or(name, String::as_str);
-            create(gctx, &repo, name, branch, !sub.get_flag("no-fetch"), !sub.get_flag("no-submodules"), !sub.get_flag("no-tmux"))
-        }
-        Some(("remove", sub)) => {
-            remove(gctx, &repo, required(sub, "name")?, sub.get_flag("force"), !sub.get_flag("keep-branch"), !sub.get_flag("no-tmux"))
-        }
-        Some(("prune", _)) => {
-            git::run(&repo.base, &["worktree", "prune"])?;
-            Ok(())
-        }
-        Some(("gone", sub)) => remove_gone(gctx, &repo, sub.get_flag("dry-run"), sub.get_flag("force"), !sub.get_flag("no-tmux")),
-        Some(("track", sub)) => track_links(gctx, &repo, required_many(sub, "path")?, sub.get_flag("force")),
-        Some(("links", _)) => list_links(gctx, &repo),
-        Some(("sync", sub)) => sync_links(gctx, &repo, None, sub.get_flag("force")),
-        _ => Err(CliError::from("no `worktree` subcommand provided")),
     }
+
+    Err(CliError::from("no `worktree` subcommand provided"))
+}
+
+fn list_cli() -> Command {
+    Command::new("list")
+        .alias("ls")
+        .about("List Git worktrees")
+        .arg(Arg::new("no-pr").long("no-pr").help("Skip GitHub pull request lookup").action(ArgAction::SetTrue))
+}
+
+fn path_cli() -> Command {
+    Command::new("path")
+        .about("Print the path for a worktree name, or the base worktree for the default branch")
+        .arg(Arg::new("name").required(true).value_name("NAME"))
+}
+
+fn new_cli() -> Command {
+    Command::new("new")
+        .about("Create a sibling worktree")
+        .arg(Arg::new("name").required(true).value_name("NAME"))
+        .arg(Arg::new("branch").value_name("BRANCH"))
+        .arg(Arg::new("no-fetch").long("no-fetch").help("Do not fetch origin before creating the worktree").action(ArgAction::SetTrue))
+        .arg(Arg::new("no-submodules").long("no-submodules").help("Skip submodule initialization").action(ArgAction::SetTrue))
+        .arg(Arg::new("no-tmux").long("no-tmux").help("Do not start a tmux session").action(ArgAction::SetTrue))
+}
+
+fn remove_cli() -> Command {
+    Command::new("remove")
+        .alias("rm")
+        .about("Remove a sibling worktree and its local branch")
+        .arg(Arg::new("name").required(true).value_name("NAME"))
+        .arg(Arg::new("force").short('f').long("force").help("Force worktree removal and branch deletion").action(ArgAction::SetTrue))
+        .arg(Arg::new("keep-branch").long("keep-branch").help("Do not delete the local branch").action(ArgAction::SetTrue))
+        .arg(Arg::new("no-tmux").long("no-tmux").help("Do not kill the matching tmux session").action(ArgAction::SetTrue))
+}
+
+fn prune_cli() -> Command {
+    Command::new("prune").about("Run git worktree prune")
+}
+
+fn gone_cli() -> Command {
+    Command::new("gone")
+        .about("Remove sibling worktrees whose origin branch no longer exists")
+        .arg(Arg::new("dry-run").short('n').long("dry-run").help("Show what would be removed").action(ArgAction::SetTrue))
+        .arg(Arg::new("force").short('f').long("force").help("Force worktree removal and branch deletion").action(ArgAction::SetTrue))
+        .arg(Arg::new("no-tmux").long("no-tmux").help("Do not kill matching tmux sessions").action(ArgAction::SetTrue))
+}
+
+fn track_cli() -> Command {
+    Command::new("track")
+        .about("Track untracked files that should be symlinked into every worktree")
+        .arg(Arg::new("path").required(true).num_args(1..).value_name("PATH"))
+        .arg(Arg::new("force").short('f').long("force").help("Replace existing files in other worktrees").action(ArgAction::SetTrue))
+}
+
+fn links_cli() -> Command {
+    Command::new("links").about("List files linked across worktrees")
+}
+
+fn sync_cli() -> Command {
+    Command::new("sync")
+        .about("Create or repair symlinks for files tracked in .branp/worktree.toml")
+        .arg(Arg::new("force").short('f').long("force").help("Replace existing non-symlink paths").action(ArgAction::SetTrue))
+}
+
+fn list_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
+    list(gctx, repo, !args.get_flag("no-pr"))
+}
+
+fn path_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
+    let name = required(args, "name")?;
+    let path = if name == repo.default_branch { repo.base.clone() } else { repo.target_dir(name) };
+    gctx.shell().note(path.display());
+    Ok(())
+}
+
+fn new_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
+    let name = required(args, "name")?;
+    let branch = args.get_one::<String>("branch").map_or(name, String::as_str);
+    create(gctx, repo, name, branch, !args.get_flag("no-fetch"), !args.get_flag("no-submodules"), !args.get_flag("no-tmux"))
+}
+
+fn remove_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
+    remove(gctx, repo, required(args, "name")?, args.get_flag("force"), !args.get_flag("keep-branch"), !args.get_flag("no-tmux"))
+}
+
+fn prune_exec(_gctx: &mut GlobalContext, repo: &Repo, _args: &ArgMatches) -> CliResult {
+    git::run(&repo.base, &["worktree", "prune"])?;
+    Ok(())
+}
+
+fn gone_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
+    remove_gone(gctx, repo, args.get_flag("dry-run"), args.get_flag("force"), !args.get_flag("no-tmux"))
+}
+
+fn track_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
+    track_links(gctx, repo, required_many(args, "path")?, args.get_flag("force"))
+}
+
+fn links_exec(gctx: &mut GlobalContext, repo: &Repo, _args: &ArgMatches) -> CliResult {
+    list_links(gctx, repo)
+}
+
+fn sync_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
+    sync_links(gctx, repo, None, args.get_flag("force"))
 }
 
 fn list(gctx: &mut GlobalContext, repo: &Repo, pr_lookup: bool) -> CliResult {
@@ -981,5 +1037,26 @@ mod tests {
             branch_delete_preflight_message("feature"),
             "local branch `feature` is not fully merged; pass --force to delete it anyway or --keep-branch to remove only the worktree"
         );
+    }
+
+    #[test]
+    fn worktree_subcommands_have_exec_handlers() {
+        for command in builtin() {
+            assert!(builtin_exec(command.get_name()).is_some(), "{} is missing an exec handler", command.get_name());
+        }
+    }
+
+    #[test]
+    fn worktree_cli_definition_is_valid() {
+        cli().debug_assert();
+    }
+
+    #[test]
+    fn worktree_subcommand_aliases_resolve_to_canonical_commands() {
+        let matches = cli().try_get_matches_from(["worktree", "ls"]).unwrap();
+        assert_eq!(matches.subcommand_name(), Some("list"));
+
+        let matches = cli().try_get_matches_from(["worktree", "rm", "example"]).unwrap();
+        assert_eq!(matches.subcommand_name(), Some("remove"));
     }
 }
