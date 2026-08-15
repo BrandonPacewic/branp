@@ -269,22 +269,23 @@ fn create(gctx: &mut GlobalContext, repo: &Repo, name: &str, branch: &str, fetch
         return Err(CliError::from(format!("worktree already exists: {}", target.display())));
     }
 
-    let start_point = confirm_default_source_branch(gctx, repo)?;
-
     if fetch {
         let _ = git::run(&repo.base, &["fetch", "origin", branch]);
     }
 
+    let target_arg = path_arg(&target);
     if git::local_branch_exists(&repo.base, branch)? {
-        return Err(CliError::from(format!("local branch already exists: {branch}")));
-    }
-
-    if git::remote_branch_exists(&repo.base, "origin", branch)? {
-        git::run(&repo.base, &["worktree", "add", path_arg(&target).as_str(), "-b", branch, &format!("origin/{branch}")])?;
-    } else if let Some(start_point) = start_point {
-        git::run(&repo.base, &["worktree", "add", path_arg(&target).as_str(), "-b", branch, &start_point])?;
+        let args = worktree_add_existing_branch_args(target_arg.as_str(), branch);
+        git::run(&repo.base, &args)?;
+    } else if git::remote_branch_exists(&repo.base, "origin", branch)? {
+        git::run(&repo.base, &["worktree", "add", target_arg.as_str(), "-b", branch, &format!("origin/{branch}")])?;
     } else {
-        git::run(&repo.base, &["worktree", "add", path_arg(&target).as_str(), "-b", branch])?;
+        let start_point = confirm_default_source_branch(gctx, repo)?;
+        if let Some(start_point) = start_point {
+            git::run(&repo.base, &["worktree", "add", target_arg.as_str(), "-b", branch, &start_point])?;
+        } else {
+            git::run(&repo.base, &["worktree", "add", target_arg.as_str(), "-b", branch])?;
+        }
     }
 
     if submodules {
@@ -1010,6 +1011,10 @@ fn path_arg(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
 
+fn worktree_add_existing_branch_args<'a>(target: &'a str, branch: &'a str) -> Vec<&'a str> {
+    vec!["worktree", "add", target, branch]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1029,6 +1034,11 @@ mod tests {
         assert_eq!(worktree_remove_args("/tmp/example", false, false, true), vec!["worktree", "remove", "--force", "/tmp/example"]);
         assert_eq!(worktree_remove_args("/tmp/example", false, true, false), vec!["worktree", "remove", "--force", "/tmp/example"]);
         assert_eq!(worktree_remove_args("/tmp/example", true, false, false), vec!["worktree", "remove", "--force", "/tmp/example"]);
+    }
+
+    #[test]
+    fn existing_local_branch_worktree_add_reuses_branch() {
+        assert_eq!(worktree_add_existing_branch_args("/tmp/example", "feature"), vec!["worktree", "add", "/tmp/example", "feature"]);
     }
 
     #[test]
