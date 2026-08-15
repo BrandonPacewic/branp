@@ -178,6 +178,107 @@ fn worktree_prune_does_not_require_default_branch_discovery() {
 }
 
 #[test]
+fn worktree_return_infers_current_scratch_and_preserves_ignored_files() {
+    let workspace = TestWorkspace::new("worktree-return-clean");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    repo.commit_file(".gitignore", "build/\n", "ignore build cache");
+
+    let home = repo.sibling("home");
+    let scratch = home.join(".bp/worktrees/scratch-clean");
+    fs::create_dir_all(scratch.parent().unwrap()).unwrap();
+    repo.git(["worktree", "add", "--detach", scratch.to_str().unwrap(), "HEAD"]);
+    fs::create_dir_all(scratch.join("build")).unwrap();
+    fs::write(scratch.join("build/cache.bin"), "cache\n").unwrap();
+
+    let output = GitRepo::from_path(&scratch).bp_with_env(["worktree", "return"], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&output, "return current scratch worktree");
+    assert!(stdout(&output).contains("returned"), "return output did not identify the target:\n{}", stdout(&output));
+
+    let scratch_repo = GitRepo::from_path(&scratch);
+    assert_eq!(stdout(&scratch_repo.git(["branch", "--show-current"])), "");
+    assert_eq!(stdout(&scratch_repo.git(["status", "--short"])), "");
+    assert_eq!(scratch_repo.read_file("file.txt"), "base\n");
+    assert_eq!(scratch_repo.read_file("build/cache.bin"), "cache\n");
+}
+
+#[test]
+fn worktree_return_refuses_dirty_scratch_until_explicitly_allowed() {
+    let workspace = TestWorkspace::new("worktree-return-dirty");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    let home = repo.sibling("home");
+    let scratch = home.join(".bp/worktrees/scratch-dirty");
+    fs::create_dir_all(scratch.parent().unwrap()).unwrap();
+    repo.git(["worktree", "add", "--detach", scratch.to_str().unwrap(), "HEAD"]);
+    fs::write(scratch.join("file.txt"), "dirty\n").unwrap();
+    fs::write(scratch.join("untracked.txt"), "untracked\n").unwrap();
+
+    let scratch_repo = GitRepo::from_path(&scratch);
+    let refused = repo.bp_with_env(["worktree", "return", scratch.to_str().unwrap()], &[("HOME", home.to_str().unwrap())]);
+    assert!(!refused.status.success(), "dirty return unexpectedly succeeded:\n{}", stdout(&refused));
+    assert!(stderr(&refused).contains("--discard-changes"), "refusal did not explain the override:\n{}", stderr(&refused));
+    assert_eq!(scratch_repo.read_file("file.txt"), "dirty\n");
+
+    let returned = repo.bp_with_env(["worktree", "return", scratch.to_str().unwrap(), "--discard-changes"], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&returned, "return dirty scratch worktree with explicit override");
+    assert_eq!(stdout(&scratch_repo.git(["status", "--short"])), "");
+    assert!(!scratch.join("untracked.txt").exists());
+}
+
+#[test]
+fn worktree_return_refuses_named_worktrees() {
+    let workspace = TestWorkspace::new("worktree-return-named");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    repo.git(["branch", "feature"]);
+    let named = repo.sibling("feature");
+    repo.git(["worktree", "add", named.to_str().unwrap(), "feature"]);
+
+    let home = repo.sibling("home");
+    let base_output = repo.bp_with_env(["worktree", "return"], &[("HOME", home.to_str().unwrap())]);
+    assert!(!base_output.status.success(), "base worktree return unexpectedly succeeded:\n{}", stdout(&base_output));
+    assert!(stderr(&base_output).contains("base worktree"), "base refusal did not identify base lifecycle:\n{}", stderr(&base_output));
+
+    let output = repo.bp_with_env(["worktree", "return", "feature"], &[("HOME", home.to_str().unwrap())]);
+    assert!(!output.status.success(), "named worktree return unexpectedly succeeded:\n{}", stdout(&output));
+    assert!(stderr(&output).contains("named worktree"), "refusal did not identify named lifecycle:\n{}", stderr(&output));
+    assert!(named.is_dir());
+}
+
+#[cfg(unix)]
+#[test]
+fn worktree_return_refuses_in_use_scratch_worktrees() {
+    let workspace = TestWorkspace::new("worktree-return-in-use");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    let home = repo.sibling("home");
+    let scratch = home.join(".bp/worktrees/scratch-in-use");
+    fs::create_dir_all(scratch.parent().unwrap()).unwrap();
+    repo.git(["worktree", "add", "--detach", scratch.to_str().unwrap(), "HEAD"]);
+
+    let mut child =
+        Command::new("sleep").arg("30").current_dir(&scratch).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let output = (0..80).find_map(|_| {
+        let output = repo.bp_with_env(["worktree", "return", scratch.to_str().unwrap()], &[("HOME", home.to_str().unwrap())]);
+        if !output.status.success() && stderr(&output).contains("in use") {
+            Some(output)
+        } else {
+            thread::sleep(Duration::from_millis(25));
+            None
+        }
+    });
+    let Some(output) = output else {
+        child.kill().unwrap();
+        child.wait().unwrap();
+        panic!("return did not report in-use scratch worktree");
+    };
+    assert!(stderr(&output).contains("sleep"), "in-use refusal omitted process detail:\n{}", stderr(&output));
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
+#[test]
 fn worktree_list_reports_base_named_and_detached_worktrees_with_state() {
     let workspace = TestWorkspace::new("worktree-list-status");
     let repo = workspace.git_repo("repo", "mega");

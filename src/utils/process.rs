@@ -80,7 +80,7 @@ mod platform {
     use std::process::Command;
 
     pub(super) fn processes_in_worktree(root: &Path) -> Result<Vec<ProcessInfo>, CliError> {
-        let output = Command::new("lsof").args(["-a", "-d", "cwd", "+D"]).arg(root).args(["-F", "pcn", "-w", "-n"]).output()?;
+        let output = Command::new("lsof").current_dir("/").args(["-a", "-d", "cwd", "+D"]).arg(root).args(["-F", "pcn", "-w", "-n"]).output()?;
 
         if !output.status.success() && output.stdout.is_empty() {
             // lsof uses exit code 1 when no process has an open file below the path.

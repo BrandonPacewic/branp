@@ -13,7 +13,7 @@ pub fn cli() -> Command {
 type WorktreeExec = fn(&mut GlobalContext, &ArgMatches) -> CliResult;
 
 fn builtin() -> Vec<Command> {
-    vec![list_cli(), path_cli(), new_cli(), remove_cli(), prune_cli(), gone_cli(), track_cli(), links_cli(), sync_cli()]
+    vec![list_cli(), path_cli(), new_cli(), return_cli(), remove_cli(), prune_cli(), gone_cli(), track_cli(), links_cli(), sync_cli()]
 }
 
 fn builtin_exec(cmd: &str) -> Option<WorktreeExec> {
@@ -21,6 +21,7 @@ fn builtin_exec(cmd: &str) -> Option<WorktreeExec> {
         "list" => list_exec,
         "path" => path_exec,
         "new" => new_exec,
+        "return" => return_exec,
         "remove" => remove_exec,
         "prune" => prune_exec,
         "gone" => gone_exec,
@@ -64,6 +65,15 @@ fn new_cli() -> Command {
         .arg(Arg::new("no-fetch").long("no-fetch").help("Do not fetch origin before creating the worktree").action(ArgAction::SetTrue))
         .arg(Arg::new("no-submodules").long("no-submodules").help("Skip submodule initialization").action(ArgAction::SetTrue))
         .arg(Arg::new("no-tmux").long("no-tmux").help("Do not start a tmux session").action(ArgAction::SetTrue))
+}
+
+fn return_cli() -> Command {
+    Command::new("return").about("Return a detached scratch worktree for reuse").arg(Arg::new("target").num_args(0..=1).value_name("NAME|PATH")).arg(
+        Arg::new("discard-changes")
+            .long("discard-changes")
+            .help("Discard tracked and ordinary untracked changes before returning")
+            .action(ArgAction::SetTrue),
+    )
 }
 
 fn remove_cli() -> Command {
@@ -146,6 +156,16 @@ fn new_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
             tmux: !args.get_flag("no-tmux"),
             session_name: repo.session_name(name),
         },
+    )
+}
+
+fn return_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
+    let repo = ops::Repo::discover(gctx.cwd())?;
+    let target = args.get_one::<String>("target").map(String::as_str);
+    let home = gctx.home().clone();
+    ops::return_worktree(
+        gctx,
+        &ops::ReturnOptions { home: &home, base: &repo.base, current: &repo.current, target, discard_changes: args.get_flag("discard-changes") },
     )
 }
 

@@ -78,6 +78,14 @@ pub struct ScratchOptions<'a> {
     pub submodules: bool,
 }
 
+pub struct ReturnOptions<'a> {
+    pub home: &'a Path,
+    pub base: &'a Path,
+    pub current: &'a Path,
+    pub target: Option<&'a str>,
+    pub discard_changes: bool,
+}
+
 pub struct GoneOptions<'a> {
     pub base: &'a Path,
     pub default_branch: &'a str,
@@ -265,6 +273,43 @@ pub fn scratch(gctx: &mut GlobalContext, options: &ScratchOptions<'_>) -> CliRes
 
     gctx.shell().note(target.display());
     enter_scratch_shell(&target)?;
+    Ok(())
+}
+
+pub fn return_worktree(gctx: &mut GlobalContext, options: &ReturnOptions<'_>) -> CliResult {
+    let worktrees = worktrees(options.base)?;
+    let target = resolve_return_target(options, &worktrees)?;
+
+    let session_name = target.file_name().and_then(|name| name.to_str()).map(|name| session_name_for(options.base, name));
+    let mut in_use = crate::utils::in_use::inspect(&target, session_name.as_deref())?;
+    // Do not treat the return command itself as an external owner.
+    in_use.processes.retain(|process| process.pid != std::process::id());
+    if in_use.is_in_use() {
+        return Err(CliError::from(format!(
+            "cannot return scratch worktree {} while it is in use: {}; stop the process or tmux session and try again",
+            target.display(),
+            in_use.reasons().join(", ")
+        )));
+    }
+
+    let changes = removal_risk_changes(&target)?;
+    if !changes.is_empty() && !options.discard_changes {
+        return Err(CliError::from(format!(
+            "cannot return dirty scratch worktree {}: {}; rerun with --discard-changes to remove local changes",
+            target.display(),
+            changes.join(", ")
+        )));
+    }
+
+    let base_head = crate::utils::git::output(options.base, &["rev-parse", "HEAD"])?;
+    reset_for_return(&target, base_head.trim())?;
+    sync(gctx, &SyncOptions { base: options.base, current: options.current, worktrees: vec![target.clone()], quiet: true, force: false })?;
+
+    if crate::utils::git::current_branch(&target)?.is_some() {
+        return Err(CliError::from(format!("returned worktree is not detached: {}", target.display())));
+    }
+
+    gctx.shell().note(format!("returned {}", target.display()));
     Ok(())
 }
 
@@ -1170,6 +1215,81 @@ fn enter_scratch_shell(target: &Path) -> CliResult {
     }
 }
 
+fn resolve_return_target(options: &ReturnOptions<'_>, worktrees: &[Worktree]) -> Result<PathBuf, CliError> {
+    let candidate = match options.target {
+        None => options.current.to_path_buf(),
+        Some(value) => return_target_candidate(options, value, worktrees),
+    };
+    let candidate =
+        candidate.canonicalize().map_err(|error| CliError::from(format!("worktree path is not available: {} ({error})", candidate.display())))?;
+    let Some(worktree) = worktrees.iter().find(|worktree| same_worktree_path(&worktree.path, &candidate)) else {
+        return Err(CliError::from(format!("not a registered Git worktree: {}", candidate.display())));
+    };
+
+    if same_worktree_path(&worktree.path, options.base) {
+        return Err(CliError::from(format!(
+            "refusing to return the base worktree {}; return accepts detached scratch worktrees only",
+            candidate.display()
+        )));
+    }
+    if worktree.branch.is_some() {
+        return Err(CliError::from(format!(
+            "refusing to return named worktree {}; return accepts detached scratch worktrees only",
+            candidate.display()
+        )));
+    }
+
+    let root = scratch_dir(options.home)
+        .canonicalize()
+        .map_err(|error| CliError::from(format!("scratch root is unavailable: {} ({error})", scratch_dir(options.home).display())))?;
+    let is_direct_child = candidate.parent() == Some(root.as_path());
+    let is_scratch_name = candidate.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("scratch-"));
+    if !is_direct_child || !is_scratch_name {
+        return Err(CliError::from(format!(
+            "refusing to return {}; target must be a detached scratch worktree directly under {}",
+            candidate.display(),
+            root.display()
+        )));
+    }
+
+    Ok(candidate)
+}
+
+fn return_target_candidate(options: &ReturnOptions<'_>, value: &str, worktrees: &[Worktree]) -> PathBuf {
+    let value_path = Path::new(value);
+    if value_path.is_absolute() || value_path.components().count() > 1 || value_path.starts_with(".") {
+        return if value_path.is_absolute() { value_path.to_path_buf() } else { options.current.join(value_path) };
+    }
+
+    let scratch = scratch_dir(options.home).join(value_path);
+    if worktrees.iter().any(|worktree| same_worktree_path(&worktree.path, &scratch)) {
+        return scratch;
+    }
+
+    let named = target_dir(options.base, value);
+    if worktrees.iter().any(|worktree| same_worktree_path(&worktree.path, &named)) {
+        return named;
+    }
+
+    if crate::utils::git::current_branch(options.base).ok().flatten().as_deref() == Some(value) {
+        return options.base.to_path_buf();
+    }
+
+    scratch
+}
+
+fn reset_for_return(target: &Path, base_head: &str) -> CliResult {
+    crate::utils::git::run(target, &["reset", "--hard", base_head])?;
+    crate::utils::git::run(target, &["clean", "-fd"])?;
+
+    if has_submodules(target) {
+        crate::utils::git::run(target, &["submodule", "foreach", "--recursive", "git", "reset", "--hard"])?;
+        crate::utils::git::run(target, &["submodule", "foreach", "--recursive", "git", "clean", "-fd"])?;
+    }
+
+    Ok(())
+}
+
 fn worktrees(repo: &Path) -> Result<Vec<Worktree>, CliError> {
     let output = crate::utils::git::output(repo, &["worktree", "list", "--porcelain"])?;
     let mut items = Vec::new();
@@ -1249,6 +1369,24 @@ linked = ["z.env", "./a.env", "z.env"]
         assert_eq!(target, root.join("scratch-test-1"));
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn return_target_candidate_resolves_scratch_name_before_named_name() {
+        let home = std::env::temp_dir().join(format!("branp-return-target-{}", std::process::id()));
+        let scratch = scratch_dir(&home).join("scratch-test");
+        fs::create_dir_all(&scratch).unwrap();
+        let options = ReturnOptions {
+            home: &home,
+            base: Path::new("/tmp/repo"),
+            current: Path::new("/tmp/repo"),
+            target: Some("scratch-test"),
+            discard_changes: false,
+        };
+        let worktrees = vec![Worktree { path: scratch.clone(), head: None, branch: None }];
+
+        assert_eq!(return_target_candidate(&options, "scratch-test", &worktrees), scratch);
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
