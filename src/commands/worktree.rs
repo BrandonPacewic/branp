@@ -13,7 +13,7 @@ pub fn cli() -> Command {
 type WorktreeExec = fn(&mut GlobalContext, &ArgMatches) -> CliResult;
 
 fn builtin() -> Vec<Command> {
-    vec![list_cli(), path_cli(), new_cli(), return_cli(), remove_cli(), prune_cli(), gone_cli(), track_cli(), links_cli(), sync_cli()]
+    vec![list_cli(), path_cli(), new_cli(), return_cli(), remove_cli(), prune_cli(), recover_cli(), gone_cli(), track_cli(), links_cli(), sync_cli()]
 }
 
 fn builtin_exec(cmd: &str) -> Option<WorktreeExec> {
@@ -24,6 +24,7 @@ fn builtin_exec(cmd: &str) -> Option<WorktreeExec> {
         "return" => return_exec,
         "remove" => remove_exec,
         "prune" => prune_exec,
+        "recover" => recover_exec,
         "gone" => gone_exec,
         "track" => track_exec,
         "links" => links_exec,
@@ -120,6 +121,34 @@ fn prune_cli() -> Command {
                 .value_name("DURATION")
                 .help("Only clean scratch worktrees older than this duration, such as 7d or 12h"),
         )
+}
+
+fn recover_cli() -> Command {
+    Command::new("recover")
+        .about("Inspect or explicitly recover quarantined scratch worktrees")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .subcommands([recover_inspect_cli(), recover_release_cli(), recover_destroy_cli()])
+}
+
+fn recover_inspect_cli() -> Command {
+    Command::new("inspect").about("Inspect quarantined scratch worktrees").arg(Arg::new("target").num_args(0..=1).value_name("NAME|PATH"))
+}
+
+fn recover_release_cli() -> Command {
+    Command::new("release")
+        .about("Release a quarantined scratch worktree after live safety checks")
+        .arg(Arg::new("target").required(true).value_name("NAME|PATH"))
+}
+
+fn recover_destroy_cli() -> Command {
+    Command::new("destroy")
+        .about("DESTRUCTIVE: destroy a quarantined scratch worktree")
+        .arg(Arg::new("target").required(true).value_name("NAME|PATH"))
+        .arg(Arg::new("confirm").long("confirm").help("Confirm destructive destruction of the quarantined worktree").action(ArgAction::SetTrue))
+        .arg(Arg::new("include-dirty").long("include-dirty").help("Allow destruction with dirty changes").action(ArgAction::SetTrue))
+        .arg(Arg::new("include-in-use").long("include-in-use").help("Allow destruction while in use").action(ArgAction::SetTrue))
+        .arg(Arg::new("no-tmux").long("no-tmux").help("Do not kill the matching tmux session").action(ArgAction::SetTrue))
 }
 
 fn gone_cli() -> Command {
@@ -220,6 +249,7 @@ fn remove_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
             dry_run: args.get_flag("dry-run"),
             include_dirty: args.get_flag("include-dirty"),
             include_in_use: args.get_flag("include-in-use"),
+            allow_state_transition: false,
             session_name: repo.session_name(name),
         },
     )
@@ -230,6 +260,30 @@ fn prune_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let older_than = args.get_one::<String>("older-than").map(|value| parse_duration(value)).transpose()?;
     let home = gctx.home().clone();
     ops::prune(gctx, &ops::PruneOptions { base: &repo.base, home: &home, confirm: args.get_flag("confirm"), older_than })
+}
+
+fn recover_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
+    let repo = ops::Repo::discover(gctx.cwd())?;
+    let home = gctx.home().clone();
+    match args.subcommand() {
+        Some(("inspect", sub)) => ops::recover_inspect(
+            gctx,
+            &ops::RecoveryOptions { home: &home, base: &repo.base, cwd: &repo.current, target: sub.get_one::<String>("target").map(String::as_str) },
+        ),
+        Some(("release", sub)) => ops::recover_release(
+            gctx,
+            &ops::RecoveryOptions { home: &home, base: &repo.base, cwd: &repo.current, target: sub.get_one::<String>("target").map(String::as_str) },
+        ),
+        Some(("destroy", sub)) => ops::recover_destroy(
+            gctx,
+            &ops::RecoveryOptions { home: &home, base: &repo.base, cwd: &repo.current, target: sub.get_one::<String>("target").map(String::as_str) },
+            sub.get_flag("confirm"),
+            sub.get_flag("include-dirty"),
+            sub.get_flag("include-in-use"),
+            !sub.get_flag("no-tmux"),
+        ),
+        _ => Err(CliError::from("no `recover` subcommand provided")),
+    }
 }
 
 fn parse_duration(value: &str) -> Result<std::time::Duration, CliError> {

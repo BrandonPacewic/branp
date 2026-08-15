@@ -528,9 +528,7 @@ fn worktree_return_infers_current_scratch_and_preserves_ignored_files() {
     repo.commit_file(".gitignore", "build/\n", "ignore build cache");
 
     let home = repo.sibling("home");
-    let scratch = home.join(".bp/worktrees/scratch-clean");
-    fs::create_dir_all(scratch.parent().unwrap()).unwrap();
-    repo.git(["worktree", "add", "--detach", scratch.to_str().unwrap(), "HEAD"]);
+    let scratch = add_detached_scratch(&repo, &home, "scratch-clean");
     fs::create_dir_all(scratch.join("build")).unwrap();
     fs::write(scratch.join("build/cache.bin"), "cache\n").unwrap();
 
@@ -551,9 +549,7 @@ fn worktree_return_refuses_dirty_scratch_until_explicitly_allowed() {
     let repo = workspace.git_repo("repo", "mega");
     repo.commit_file("file.txt", "base\n", "initial");
     let home = repo.sibling("home");
-    let scratch = home.join(".bp/worktrees/scratch-dirty");
-    fs::create_dir_all(scratch.parent().unwrap()).unwrap();
-    repo.git(["worktree", "add", "--detach", scratch.to_str().unwrap(), "HEAD"]);
+    let scratch = add_detached_scratch(&repo, &home, "scratch-dirty");
     fs::write(scratch.join("file.txt"), "dirty\n").unwrap();
     fs::write(scratch.join("untracked.txt"), "untracked\n").unwrap();
 
@@ -596,9 +592,7 @@ fn worktree_return_refuses_in_use_scratch_worktrees() {
     let repo = workspace.git_repo("repo", "mega");
     repo.commit_file("file.txt", "base\n", "initial");
     let home = repo.sibling("home");
-    let scratch = home.join(".bp/worktrees/scratch-in-use");
-    fs::create_dir_all(scratch.parent().unwrap()).unwrap();
-    repo.git(["worktree", "add", "--detach", scratch.to_str().unwrap(), "HEAD"]);
+    let scratch = add_detached_scratch(&repo, &home, "scratch-in-use");
 
     let mut child =
         Command::new("sleep").arg("30").current_dir(&scratch).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
@@ -654,9 +648,124 @@ fn worktree_list_reports_base_named_and_detached_worktrees_with_state() {
     assert!(scratch_line.contains("clean"), "scratch row did not report clean state:\n{text}");
 }
 
+#[cfg(unix)]
+#[test]
+fn interrupted_scratch_acquisition_is_not_reused_until_explicit_recovery() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let workspace = TestWorkspace::new("worktree-state-interrupted");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    let home = repo.sibling("home");
+    let shell = home.join("interrupt-shell");
+    let shell_pid = home.join("interrupt-shell.pid");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(&shell, format!("#!/bin/sh\necho $$ > {}\nexec sleep 30 >/dev/null 2>&1\n", shell_pid.display())).unwrap();
+    fs::set_permissions(&shell, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut interrupted = Command::new(env!("CARGO_BIN_EXE_bp"))
+        .args(["worktree", "new", "--no-submodules"])
+        .current_dir(repo.path())
+        .env("HOME", home.to_str().unwrap())
+        .env("SHELL", shell.to_str().unwrap())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let state_path = home.join(".bp/worktrees/state.toml");
+    let ready = (0..120).any(|_| {
+        fs::read_to_string(&state_path).map(|state| state.contains("availability = \"leased\"") && shell_pid.is_file()).unwrap_or(false) || {
+            thread::sleep(Duration::from_millis(25));
+            false
+        }
+    });
+    assert!(ready, "scratch acquisition never wrote a leased state");
+    interrupted.kill().unwrap();
+    let _interrupted_output = interrupted.wait_with_output().unwrap();
+    if let Ok(pid) = fs::read_to_string(&shell_pid) {
+        let _ = Command::new("kill").args(["-TERM", pid.trim()]).status();
+    }
+    let canonical_home = fs::canonicalize(&home).unwrap();
+    let first_path = stdout(&repo.git(["worktree", "list", "--porcelain"]))
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .find(|line| line.starts_with(canonical_home.to_str().unwrap()) && line.contains("/.bp/worktrees/scratch-"))
+        .map(PathBuf::from)
+        .expect("interrupted scratch worktree was not registered");
+    assert!(first_path.is_dir(), "interrupted acquisition removed its worktree: {}", first_path.display());
+
+    let next = repo.bp_with_env(["worktree", "new", "--no-submodules"], &[("HOME", home.to_str().unwrap()), ("SHELL", "/bin/sh")]);
+    assert_success(&next, "new scratch after interruption");
+    assert_ne!(PathBuf::from(stdout(&next).trim()), first_path);
+    assert!(stderr(&next).contains("state is leased"), "interrupted state was not reported as non-reusable:\n{}", stderr(&next));
+
+    let released = repo.bp_with_env(["worktree", "recover", "release", first_path.to_str().unwrap()], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&released, "release interrupted scratch");
+    let reused = repo.bp_with_env(["worktree", "new", "--no-submodules"], &[("HOME", home.to_str().unwrap()), ("SHELL", "/bin/sh")]);
+    assert_success(&reused, "reuse recovered scratch");
+    assert_eq!(fs::canonicalize(PathBuf::from(stdout(&reused).trim())).unwrap(), fs::canonicalize(first_path).unwrap());
+}
+
+#[test]
+fn missing_or_corrupt_scratch_state_quarantines_existing_worktrees() {
+    let workspace = TestWorkspace::new("worktree-state-quarantine");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    let home = repo.sibling("home");
+    let missing = add_detached_scratch(&repo, &home, "scratch-missing-state");
+    let state_path = home.join(".bp/worktrees/state.toml");
+    fs::remove_file(&state_path).unwrap();
+
+    let missing_output = repo.bp_with_env(["worktree", "new", "--no-submodules"], &[("HOME", home.to_str().unwrap()), ("SHELL", "/bin/sh")]);
+    assert_success(&missing_output, "new scratch with missing state");
+    let missing_text = format!("{}{}", stdout(&missing_output), stderr(&missing_output));
+    assert!(missing_text.contains("state is missing") && missing_text.contains("quarantined"), "missing state lacked diagnostics:\n{missing_text}");
+    let released = repo.bp_with_env(["worktree", "recover", "release", missing.to_str().unwrap()], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&released, "release missing-state scratch");
+
+    fs::write(&state_path, "version = 999\n").unwrap();
+    let corrupt_output = repo.bp_with_env(["worktree", "new", "--no-submodules"], &[("HOME", home.to_str().unwrap()), ("SHELL", "/bin/sh")]);
+    assert_success(&corrupt_output, "new scratch with corrupt state");
+    let corrupt_text = format!("{}{}", stdout(&corrupt_output), stderr(&corrupt_output));
+    assert!(corrupt_text.contains("state is corrupt") && corrupt_text.contains("quarantined"), "corrupt state lacked diagnostics:\n{corrupt_text}");
+    assert!(fs::read_dir(home.join(".bp/worktrees")).unwrap().any(|entry| entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with("state.toml.corrupt.")));
+    let inspected = repo.bp_with_env(["worktree", "recover", "inspect", missing.to_str().unwrap()], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&inspected, "inspect quarantined scratch");
+    assert!(stdout(&inspected).contains("quarantined scratch worktrees"));
+}
+
+#[test]
+fn destroying_quarantined_scratch_requires_confirmation_and_is_visible() {
+    let workspace = TestWorkspace::new("worktree-state-destroy");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    let home = repo.sibling("home");
+    let scratch = add_detached_scratch(&repo, &home, "scratch-quarantine-destroy");
+    fs::remove_file(home.join(".bp/worktrees/state.toml")).unwrap();
+
+    let refused = repo.bp_with_env(["worktree", "recover", "destroy", scratch.to_str().unwrap()], &[("HOME", home.to_str().unwrap())]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("requires --confirm"));
+    assert!(scratch.is_dir());
+
+    let destroyed = repo
+        .bp_with_env(["worktree", "recover", "destroy", scratch.to_str().unwrap(), "--confirm", "--no-tmux"], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&destroyed, "destroy quarantined scratch");
+    let text = format!("{}{}", stdout(&destroyed), stderr(&destroyed));
+    assert!(text.contains("DESTRUCTIVE: destroying quarantined scratch worktree"));
+    assert!(!scratch.exists());
+}
+
 fn add_detached_scratch(repo: &GitRepo, home: &Path, name: &str) -> PathBuf {
     let scratch = home.join(".bp/worktrees").join(name);
     fs::create_dir_all(scratch.parent().unwrap()).unwrap();
     repo.git(["worktree", "add", "--detach", scratch.to_str().unwrap(), "HEAD"]);
+    let output = repo.bp_with_env(["worktree", "recover", "release", name], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&output, "register scratch state");
     scratch
 }

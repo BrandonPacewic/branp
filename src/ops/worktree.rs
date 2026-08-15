@@ -13,6 +13,7 @@ use toml_edit::{value, Array, DocumentMut, Item};
 use crate::config::RepoConfig;
 use crate::context::GlobalContext;
 use crate::errors::{CliError, CliResult};
+use crate::ops::scratch_state::{self, Availability, Entry, Registered, State, Store};
 
 pub struct PathOptions<'a> {
     pub base: &'a Path,
@@ -67,6 +68,7 @@ pub struct RemoveOptions<'a> {
     pub dry_run: bool,
     pub include_dirty: bool,
     pub include_in_use: bool,
+    pub allow_state_transition: bool,
     pub session_name: String,
 }
 
@@ -103,6 +105,13 @@ pub struct GoneOptions<'a> {
     pub dry_run: bool,
     pub force: bool,
     pub tmux: bool,
+}
+
+pub struct RecoveryOptions<'a> {
+    pub home: &'a Path,
+    pub base: &'a Path,
+    pub cwd: &'a Path,
+    pub target: Option<&'a str>,
 }
 
 #[derive(Clone)]
@@ -163,6 +172,7 @@ pub fn path(gctx: &mut GlobalContext, options: &PathOptions<'_>) -> CliResult {
 
 pub fn prune(gctx: &mut GlobalContext, options: &PruneOptions<'_>) -> CliResult {
     let registered = worktrees(options.base)?;
+    let durable_state = state_snapshot(gctx, options.home, options.base)?;
     let scratch_root = scratch_dir(options.home).canonicalize().ok();
     let mut candidates = Vec::new();
     let mut skipped = 0;
@@ -210,6 +220,20 @@ pub fn prune(gctx: &mut GlobalContext, options: &PruneOptions<'_>) -> CliResult 
         }
         if worktree.branch.is_some() {
             gctx.shell().warn(format!("skipping scratch worktree {}: worktree is named and not detached", worktree.path.display()));
+            skipped += 1;
+            continue;
+        }
+        let Some(state_entry) = durable_state.entries.get(name) else {
+            gctx.shell().warn(format!("skipping scratch worktree {}: state is missing; use `bp worktree recover inspect`", path.display()));
+            skipped += 1;
+            continue;
+        };
+        if state_entry.availability != Availability::Available {
+            gctx.shell().warn(format!(
+                "skipping scratch worktree {}: durable state is {}; use `bp worktree recover inspect`",
+                path.display(),
+                state_entry.availability.as_str()
+            ));
             skipped += 1;
             continue;
         }
@@ -325,6 +349,20 @@ pub fn prune(gctx: &mut GlobalContext, options: &PruneOptions<'_>) -> CliResult 
     let mut removed = 0;
     for candidate in candidates {
         let path_string = candidate.path.display().to_string();
+        if let Err(error) = transition_scratch_state(
+            gctx,
+            options.home,
+            options.base,
+            &candidate.path,
+            Availability::Destroying,
+            Some(scratch_state::owner_token()),
+            None,
+        ) {
+            skipped += 1;
+            gctx.shell().warn(format!("skipping scratch worktree {path_string}: could not persist destruction state: {}", error.message));
+            drop(candidate.reservation);
+            continue;
+        }
         let result = remove(
             gctx,
             &RemoveOptions {
@@ -339,6 +377,7 @@ pub fn prune(gctx: &mut GlobalContext, options: &PruneOptions<'_>) -> CliResult 
                 dry_run: false,
                 include_dirty: false,
                 include_in_use: false,
+                allow_state_transition: true,
                 session_name: session_name_for(options.base, &path_string),
             },
         );
@@ -415,10 +454,30 @@ pub fn remove(gctx: &mut GlobalContext, options: &RemoveOptions<'_>) -> CliResul
     let session_name = remove_session_name(options, &target.path);
 
     if target.scratch {
+        let state = state_snapshot(gctx, options.home, options.base)?;
+        let name =
+            target.path.file_name().and_then(|value| value.to_str()).ok_or_else(|| CliError::from("scratch worktree path has no valid name"))?;
+        let state_entry = state.entries.get(name).ok_or_else(|| {
+            CliError::from(format!(
+                "cannot remove scratch worktree {}: durable state is missing; use `bp worktree recover destroy --confirm`",
+                target.path.display()
+            ))
+        })?;
         let inspection = inspect_scratch_removal(&target.path, &session_name)?;
         if options.dry_run {
             render_scratch_remove_preview(gctx, &target.path, &inspection);
+            gctx.shell().note(format!("durable state: {}", state_entry.availability.as_str()));
             return Ok(());
+        }
+
+        if state_entry.availability != Availability::Available
+            && !(options.allow_state_transition && state_entry.availability == Availability::Destroying)
+        {
+            return Err(CliError::from(format!(
+                "cannot remove scratch worktree {}: durable state is {}; use `bp worktree recover inspect` and explicitly recover it",
+                target.path.display(),
+                state_entry.availability.as_str()
+            )));
         }
 
         let mut refusals = Vec::new();
@@ -432,12 +491,51 @@ pub fn remove(gctx: &mut GlobalContext, options: &RemoveOptions<'_>) -> CliResul
             return Err(CliError::from(format!("cannot remove scratch worktree {}: {}", target.path.display(), refusals.join("; "))));
         }
 
-        let target_has_submodules = has_submodules(&target.path);
-        deinit_submodules(gctx, &target.path)?;
-        let target_arg = path_arg(&target.path);
-        let remove_args = worktree_remove_args(target_arg.as_str(), false, options.include_dirty, target_has_submodules);
-        crate::utils::git::run(options.base, &remove_args)?;
-        crate::utils::git::run(options.base, &["worktree", "prune"])?;
+        let reservation = if options.allow_state_transition {
+            None
+        } else {
+            let root = scratch_dir(options.home).canonicalize()?;
+            Some(try_reserve_scratch(&root, &target.path)?.ok_or_else(|| {
+                CliError::from(format!("cannot remove scratch worktree {} while another lifecycle operation is running", target.path.display()))
+            })?)
+        };
+        if !options.allow_state_transition {
+            transition_scratch_state(
+                gctx,
+                options.home,
+                options.base,
+                &target.path,
+                Availability::Destroying,
+                Some(scratch_state::owner_token()),
+                None,
+            )?;
+        }
+
+        let result = (|| {
+            let target_has_submodules = has_submodules(&target.path);
+            deinit_submodules(gctx, &target.path)?;
+            let target_arg = path_arg(&target.path);
+            let remove_args = worktree_remove_args(target_arg.as_str(), false, options.include_dirty, target_has_submodules);
+            crate::utils::git::run(options.base, &remove_args)?;
+            crate::utils::git::run(options.base, &["worktree", "prune"])?;
+            Ok::<(), CliError>(())
+        })();
+
+        if let Err(error) = &result {
+            let _ = transition_scratch_state(
+                gctx,
+                options.home,
+                options.base,
+                &target.path,
+                Availability::Quarantined,
+                None,
+                Some(format!("destruction did not complete: {}", error.message)),
+            );
+        } else {
+            remove_scratch_state(gctx, options.home, options.base, &target.path)?;
+        }
+        drop(reservation);
+        result?;
 
         if options.tmux {
             crate::utils::tmux::kill_session(gctx, &session_name)?;
@@ -645,9 +743,34 @@ pub fn scratch(gctx: &mut GlobalContext, options: &ScratchOptions<'_>) -> CliRes
 
     let target = reserve_scratch_target_in(&root, &format_scratch_prefix())?;
     let reservation = try_reserve_scratch(&root, &target)?.ok_or_else(|| CliError::from("could not reserve a new scratch worktree"))?;
+    let name =
+        target.file_name().and_then(|value| value.to_str()).ok_or_else(|| CliError::from("scratch worktree path has no valid name"))?.to_string();
+    let registered = scratch_registered_worktrees(options.base, &root)?;
+    let ((), notices) = scratch_store(options.home).transaction(&registered, |state| {
+        state.entries.insert(
+            name,
+            Entry {
+                path: target.canonicalize().unwrap_or_else(|_| target.clone()),
+                owner: Some(scratch_state::owner_token()),
+                availability: Availability::Provisioning,
+                last_used: Some(scratch_state::now_seconds()),
+                reason: None,
+            },
+        );
+        Ok(())
+    })?;
+    report_state_notices(gctx, notices);
     let target_arg = path_arg(&target);
     if let Err(error) = crate::utils::git::run(options.base, &["worktree", "add", "--detach", target_arg.as_str()]) {
-        let _ = fs::remove_dir(&target);
+        let _ = transition_scratch_state(
+            gctx,
+            options.home,
+            options.base,
+            &target,
+            Availability::Quarantined,
+            None,
+            Some(format!("scratch creation was interrupted: {}", error.message)),
+        );
         return Err(error);
     }
 
@@ -655,27 +778,60 @@ pub fn scratch(gctx: &mut GlobalContext, options: &ScratchOptions<'_>) -> CliRes
 }
 
 fn setup_scratch(gctx: &mut GlobalContext, options: &ScratchOptions<'_>, target: PathBuf, reservation: ScratchReservation) -> CliResult {
-    if options.submodules {
-        crate::utils::git::run(&target, &["submodule", "update", "--init", "--recursive"])?;
+    let setup = (|| {
+        if options.submodules {
+            crate::utils::git::run(&target, &["submodule", "update", "--init", "--recursive"])?;
+        }
+
+        sync(gctx, &SyncOptions { base: options.base, current: options.current, worktrees: vec![target.clone()], quiet: true, force: false })?;
+        transition_scratch_state(gctx, options.home, options.base, &target, Availability::Leased, Some(scratch_state::owner_token()), None)?;
+        Ok::<(), CliError>(())
+    })();
+    if let Err(error) = setup {
+        let _ = transition_scratch_state(
+            gctx,
+            options.home,
+            options.base,
+            &target,
+            Availability::Quarantined,
+            None,
+            Some(format!("scratch setup did not complete: {}", error.message)),
+        );
+        drop(reservation);
+        return Err(error);
     }
 
-    sync(gctx, &SyncOptions { base: options.base, current: options.current, worktrees: vec![target.clone()], quiet: true, force: false })?;
-
     gctx.shell().note(target.display());
-    let result = enter_scratch_shell(&target);
+    let shell_result = enter_scratch_shell(&target);
+    let state_result = match &shell_result {
+        Ok(()) => transition_scratch_state(gctx, options.home, options.base, &target, Availability::Available, None, None),
+        Err(error) => transition_scratch_state(
+            gctx,
+            options.home,
+            options.base,
+            &target,
+            Availability::Quarantined,
+            None,
+            Some(format!("scratch shell did not exit cleanly: {}", error.message)),
+        ),
+    };
     drop(reservation);
-    result
+    state_result.and(shell_result)
 }
 
 pub fn return_worktree(gctx: &mut GlobalContext, options: &ReturnOptions<'_>) -> CliResult {
     let worktrees = worktrees(options.base)?;
     let target = resolve_return_target(options, &worktrees)?;
+    let root = scratch_dir(options.home).canonicalize()?;
+    let reservation = try_reserve_scratch(&root, &target)?
+        .ok_or_else(|| CliError::from(format!("cannot return scratch worktree {} while another lifecycle operation is running", target.display())))?;
 
     let session_name = target.file_name().and_then(|name| name.to_str()).map(|name| session_name_for(options.base, name));
     let mut in_use = crate::utils::in_use::inspect(&target, session_name.as_deref())?;
     // Do not treat the return command itself as an external owner.
     in_use.processes.retain(|process| process.pid != std::process::id());
     if in_use.is_in_use() {
+        drop(reservation);
         return Err(CliError::from(format!(
             "cannot return scratch worktree {} while it is in use: {}; stop the process or tmux session and try again",
             target.display(),
@@ -685,6 +841,7 @@ pub fn return_worktree(gctx: &mut GlobalContext, options: &ReturnOptions<'_>) ->
 
     let changes = removal_risk_changes(&target)?;
     if !changes.is_empty() && !options.discard_changes {
+        drop(reservation);
         return Err(CliError::from(format!(
             "cannot return dirty scratch worktree {}: {}; rerun with --discard-changes to remove local changes",
             target.display(),
@@ -692,16 +849,222 @@ pub fn return_worktree(gctx: &mut GlobalContext, options: &ReturnOptions<'_>) ->
         )));
     }
 
-    let base_head = crate::utils::git::output(options.base, &["rev-parse", "HEAD"])?;
-    reset_for_return(&target, base_head.trim())?;
-    sync(gctx, &SyncOptions { base: options.base, current: options.current, worktrees: vec![target.clone()], quiet: true, force: false })?;
+    let registered = scratch_registered_worktrees(options.base, &root)?;
+    let ((), notices) = scratch_store(options.home).transaction(&registered, |state| {
+        let name = target.file_name().and_then(|value| value.to_str()).ok_or_else(|| CliError::from("scratch worktree path has no valid name"))?;
+        let entry = state.entries.get_mut(name).ok_or_else(|| {
+            CliError::from(format!(
+                "cannot return scratch worktree {}: durable state is missing; use `bp worktree recover inspect`",
+                target.display()
+            ))
+        })?;
+        if entry.availability == Availability::Quarantined {
+            return Err(CliError::from(format!(
+                "cannot return quarantined scratch worktree {}; use `bp worktree recover release` or `destroy --confirm`",
+                target.display()
+            )));
+        }
+        entry.availability = Availability::Cleaning;
+        entry.owner = Some(scratch_state::owner_token());
+        entry.reason = None;
+        Ok(())
+    })?;
+    report_state_notices(gctx, notices);
 
-    if crate::utils::git::current_branch(&target)?.is_some() {
-        return Err(CliError::from(format!("returned worktree is not detached: {}", target.display())));
-    }
+    let result = (|| {
+        let base_head = crate::utils::git::output(options.base, &["rev-parse", "HEAD"])?;
+        reset_for_return(&target, base_head.trim())?;
+        sync(gctx, &SyncOptions { base: options.base, current: options.current, worktrees: vec![target.clone()], quiet: true, force: false })?;
+
+        if crate::utils::git::current_branch(&target)?.is_some() {
+            return Err(CliError::from(format!("returned worktree is not detached: {}", target.display())));
+        }
+        Ok::<(), CliError>(())
+    })();
+    let state_result = match &result {
+        Ok(()) => transition_scratch_state(gctx, options.home, options.base, &target, Availability::Available, None, None),
+        Err(error) => transition_scratch_state(
+            gctx,
+            options.home,
+            options.base,
+            &target,
+            Availability::Quarantined,
+            None,
+            Some(format!("return did not complete: {}", error.message)),
+        ),
+    };
+    drop(reservation);
+    state_result?;
+    result?;
 
     gctx.shell().note(format!("returned {}", target.display()));
     Ok(())
+}
+
+pub fn recover_inspect(gctx: &mut GlobalContext, options: &RecoveryOptions<'_>) -> CliResult {
+    let state = state_snapshot(gctx, options.home, options.base)?;
+    let entries = if let Some(target) = options.target {
+        let path = resolve_recovery_target(options, target)?;
+        let name = path.file_name().and_then(|value| value.to_str()).ok_or_else(|| CliError::from("worktree path has no valid name"))?;
+        state.entries.get(name).map(|entry| vec![(name.to_string(), entry.clone())]).unwrap_or_default()
+    } else {
+        state.entries.into_iter().filter(|(_, entry)| entry.availability != Availability::Available).collect::<Vec<_>>()
+    };
+
+    if entries.is_empty() {
+        gctx.shell().note("no quarantined scratch worktrees");
+        return Ok(());
+    }
+
+    gctx.shell().note("quarantined scratch worktrees:");
+    for (name, entry) in entries {
+        let owner = entry.owner.as_deref().unwrap_or("none");
+        let last_used = entry.last_used.map_or_else(|| "never".to_string(), |value| value.to_string());
+        let reason = entry.reason.as_deref().unwrap_or("state is not reusable");
+        gctx.shell().note(format!("  {name}: {} ({}, owner={owner}, last-used={last_used})", entry.path.display(), entry.availability.as_str()));
+        gctx.shell().note(format!("    reason: {reason}"));
+    }
+    gctx.shell().note("inspect live safety before using bp worktree recover release or the destructive destroy --confirm");
+    Ok(())
+}
+
+pub fn recover_release(gctx: &mut GlobalContext, options: &RecoveryOptions<'_>) -> CliResult {
+    let target_name = options.target.ok_or_else(|| CliError::from("missing recovery target"))?;
+    let target = resolve_recovery_target(options, target_name)?;
+    let state = state_snapshot(gctx, options.home, options.base)?;
+    let name = target.file_name().and_then(|value| value.to_str()).ok_or_else(|| CliError::from("worktree path has no valid name"))?;
+    let entry = state.entries.get(name).ok_or_else(|| CliError::from(format!("no durable state entry for {}", target.display())))?;
+    if entry.availability == Availability::Available {
+        return Err(CliError::from(format!("scratch worktree {} is already available", target.display())));
+    }
+
+    if crate::utils::git::current_branch(&target)?.is_some() {
+        return Err(CliError::from(format!(
+            "cannot release {}: worktree is named; recovery only accepts detached scratch worktrees",
+            target.display()
+        )));
+    }
+    let changes = removal_risk_changes(&target)?;
+    if !changes.is_empty() {
+        return Err(CliError::from(format!(
+            "cannot release quarantined scratch worktree {}: dirty changes ({}); inspect or use destroy --confirm --include-dirty",
+            target.display(),
+            changes.join(", ")
+        )));
+    }
+    let session_name = target.file_name().and_then(|value| value.to_str()).map(|value| session_name_for(options.base, value));
+    let mut in_use = crate::utils::in_use::inspect(&target, session_name.as_deref())?;
+    in_use.processes.retain(|process| process.pid != std::process::id());
+    if in_use.is_in_use() {
+        return Err(CliError::from(format!(
+            "cannot release quarantined scratch worktree {} while it is in use: {}",
+            target.display(),
+            in_use.reasons().join(", ")
+        )));
+    }
+
+    transition_scratch_state(gctx, options.home, options.base, &target, Availability::Available, None, None)?;
+    gctx.shell().note(format!("released quarantined scratch worktree {}", target.display()));
+    Ok(())
+}
+
+pub fn recover_destroy(
+    gctx: &mut GlobalContext,
+    options: &RecoveryOptions<'_>,
+    confirm: bool,
+    include_dirty: bool,
+    include_in_use: bool,
+    tmux: bool,
+) -> CliResult {
+    if !confirm {
+        return Err(CliError::from("destructive recovery requires --confirm; use bp worktree recover inspect first"));
+    }
+    let target_name = options.target.ok_or_else(|| CliError::from("missing recovery target"))?;
+    let target = resolve_recovery_target(options, target_name)?;
+    let state = state_snapshot(gctx, options.home, options.base)?;
+    let name = target.file_name().and_then(|value| value.to_str()).ok_or_else(|| CliError::from("worktree path has no valid name"))?;
+    let entry = state.entries.get(name).ok_or_else(|| CliError::from(format!("no durable state entry for {}", target.display())))?;
+    if entry.availability == Availability::Available {
+        return Err(CliError::from(format!("scratch worktree {} is available; use bp worktree remove for normal destruction", target.display())));
+    }
+
+    let session_name = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(|value| session_name_for(options.base, value))
+        .unwrap_or_else(|| options.base.display().to_string());
+    let inspection = inspect_scratch_removal(&target, &session_name)?;
+    let mut refusals = Vec::new();
+    if !inspection.changes.is_empty() && !include_dirty {
+        refusals.push(format!("dirty changes: {} (pass --include-dirty)", inspection.changes.join(", ")));
+    }
+    if inspection.in_use.is_in_use() && !include_in_use {
+        refusals.push(format!("in use: {} (pass --include-in-use)", inspection.in_use.reasons().join(", ")));
+    }
+    if !refusals.is_empty() {
+        return Err(CliError::from(format!("cannot destroy quarantined scratch worktree {}: {}", target.display(), refusals.join("; "))));
+    }
+
+    let root = scratch_dir(options.home).canonicalize()?;
+    let reservation = try_reserve_scratch(&root, &target)?.ok_or_else(|| {
+        CliError::from(format!("cannot destroy scratch worktree {} while another lifecycle operation is running", target.display()))
+    })?;
+    transition_scratch_state(gctx, options.home, options.base, &target, Availability::Destroying, Some(scratch_state::owner_token()), None)?;
+    gctx.shell().warn(format!("DESTRUCTIVE: destroying quarantined scratch worktree {}", target.display()));
+
+    let result = (|| {
+        let target_has_submodules = has_submodules(&target);
+        deinit_submodules(gctx, &target)?;
+        let target_arg = path_arg(&target);
+        let remove_args = worktree_remove_args(target_arg.as_str(), false, include_dirty, target_has_submodules);
+        crate::utils::git::run(options.base, &remove_args)?;
+        crate::utils::git::run(options.base, &["worktree", "prune"])?;
+        Ok::<(), CliError>(())
+    })();
+    if let Err(error) = &result {
+        let _ = transition_scratch_state(
+            gctx,
+            options.home,
+            options.base,
+            &target,
+            Availability::Quarantined,
+            None,
+            Some(format!("destruction did not complete: {}", error.message)),
+        );
+    } else {
+        remove_scratch_state(gctx, options.home, options.base, &target)?;
+    }
+    drop(reservation);
+    result?;
+    if tmux {
+        crate::utils::tmux::kill_session(gctx, &session_name)?;
+    }
+    gctx.shell().note(format!("destroyed quarantined scratch worktree {}", target.display()));
+    Ok(())
+}
+
+fn resolve_recovery_target(options: &RecoveryOptions<'_>, target: &str) -> Result<PathBuf, CliError> {
+    let registered = worktrees(options.base)?;
+    let remove_options = RemoveOptions {
+        base: options.base,
+        current: options.cwd,
+        cwd: options.cwd,
+        home: options.home,
+        name: target,
+        force: false,
+        delete_branch: false,
+        tmux: false,
+        dry_run: false,
+        include_dirty: false,
+        include_in_use: false,
+        allow_state_transition: false,
+        session_name: session_name_for(options.base, target),
+    };
+    let resolved = resolve_remove_target(&remove_options, &registered)?;
+    if !resolved.scratch {
+        return Err(CliError::from(format!("recovery target {target} is a named worktree; named worktrees are never managed by scratch recovery")));
+    }
+    Ok(resolved.path)
 }
 
 pub fn gone(gctx: &mut GlobalContext, options: &GoneOptions<'_>) -> CliResult {
@@ -742,6 +1105,7 @@ pub fn gone(gctx: &mut GlobalContext, options: &GoneOptions<'_>) -> CliResult {
                     dry_run: false,
                     include_dirty: false,
                     include_in_use: false,
+                    allow_state_transition: false,
                     session_name: session_name_for(options.base, &name),
                 },
             )?;
@@ -1580,6 +1944,87 @@ fn scratch_dir(home: &Path) -> PathBuf {
     home.join(".bp/worktrees")
 }
 
+fn scratch_registered_worktrees(base: &Path, root: &Path) -> Result<Vec<Registered>, CliError> {
+    let Some(root) = root.canonicalize().ok() else {
+        return Ok(Vec::new());
+    };
+    Ok(worktrees(base)?
+        .into_iter()
+        .filter_map(|worktree| {
+            if worktree.branch.is_some() {
+                return None;
+            }
+            let path = worktree.path.canonicalize().ok()?;
+            let name = path.file_name()?.to_str()?.to_string();
+            if !name.starts_with("scratch-") || path.parent() != Some(root.as_path()) {
+                return None;
+            }
+            Some(Registered { name, path })
+        })
+        .collect())
+}
+
+fn scratch_store(home: &Path) -> Store {
+    Store::new(&scratch_dir(home))
+}
+
+fn scratch_store_from_root(root: &Path) -> Store {
+    Store::new(root)
+}
+
+fn report_state_notices(gctx: &mut GlobalContext, notices: Vec<String>) {
+    for notice in notices {
+        gctx.shell().warn(notice);
+    }
+}
+
+fn state_snapshot(gctx: &mut GlobalContext, home: &Path, base: &Path) -> Result<State, CliError> {
+    let root = scratch_dir(home);
+    let registered = scratch_registered_worktrees(base, &root)?;
+    let (state, notices) = scratch_store(home).read(&registered)?;
+    report_state_notices(gctx, notices);
+    Ok(state)
+}
+
+fn transition_scratch_state(
+    gctx: &mut GlobalContext,
+    home: &Path,
+    base: &Path,
+    target: &Path,
+    availability: Availability,
+    owner: Option<String>,
+    reason: Option<String>,
+) -> CliResult {
+    let root = scratch_dir(home);
+    let name =
+        target.file_name().and_then(|value| value.to_str()).ok_or_else(|| CliError::from("scratch worktree path has no valid name"))?.to_string();
+    let registered = scratch_registered_worktrees(base, &root)?;
+    let ((), notices) = scratch_store(home).transaction(&registered, |state| {
+        let entry = state.entries.get_mut(&name).ok_or_else(|| {
+            CliError::from(format!("scratch worktree {} has no durable state; use `bp worktree recover inspect`", target.display()))
+        })?;
+        entry.availability = availability;
+        entry.owner = owner;
+        entry.reason = reason;
+        entry.last_used = Some(scratch_state::now_seconds());
+        Ok(())
+    })?;
+    report_state_notices(gctx, notices);
+    Ok(())
+}
+
+fn remove_scratch_state(gctx: &mut GlobalContext, home: &Path, base: &Path, target: &Path) -> CliResult {
+    let name =
+        target.file_name().and_then(|value| value.to_str()).ok_or_else(|| CliError::from("scratch worktree path has no valid name"))?.to_string();
+    let registered = scratch_registered_worktrees(base, &scratch_dir(home))?;
+    let ((), notices) = scratch_store(home).transaction(&registered, |state| {
+        state.entries.remove(&name);
+        Ok(())
+    })?;
+    report_state_notices(gctx, notices);
+    Ok(())
+}
+
 fn directory_size(path: &Path) -> Result<u64, CliError> {
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
@@ -1676,6 +2121,9 @@ fn find_reusable_scratch(
     let root = root.canonicalize()?;
     let mut candidates: Vec<_> = worktrees.iter().collect();
     candidates.sort_by(|left, right| left.path.cmp(&right.path));
+    let registered_state = scratch_registered_worktrees(base, &root)?;
+    let (durable_state, notices) = scratch_store_from_root(&root).read(&registered_state)?;
+    report_state_notices(gctx, notices);
 
     for worktree in candidates {
         let registered = &worktree.path;
@@ -1700,19 +2148,44 @@ fn find_reusable_scratch(
             warn_scratch_skip(gctx, &candidate, "worktree is named and not detached");
             continue;
         }
+        let Some(entry) = durable_state.entries.get(name) else {
+            warn_scratch_skip(gctx, &candidate, "state metadata is missing; worktree is quarantined");
+            continue;
+        };
+        if entry.availability != Availability::Available {
+            warn_scratch_skip(gctx, &candidate, format!("state is {}; worktree is not reusable", entry.availability.as_str()));
+            continue;
+        }
 
         let Some(reservation) = try_reserve_scratch(&root, &candidate)? else {
             warn_scratch_skip(gctx, &candidate, "short-lived acquisition reservation is held");
             continue;
         };
-
-        if let Err(reason) = reusable_scratch_check(base, &candidate) {
-            warn_scratch_skip(gctx, &candidate, reason);
-            drop(reservation);
-            continue;
+        let (claimed, notices) = scratch_store_from_root(&root).transaction(&registered_state, |state| {
+            let Some(entry) = state.entries.get_mut(name) else {
+                return Ok(false);
+            };
+            if entry.availability != Availability::Available {
+                return Ok(false);
+            }
+            if let Err(reason) = reusable_scratch_check(base, &candidate) {
+                entry.availability = Availability::Quarantined;
+                entry.owner = None;
+                entry.reason = Some(reason.clone());
+                warn_scratch_skip(gctx, &candidate, format!("{reason}; worktree is quarantined"));
+                return Ok(false);
+            }
+            entry.availability = Availability::Leased;
+            entry.owner = Some(scratch_state::owner_token());
+            entry.last_used = Some(scratch_state::now_seconds());
+            entry.reason = None;
+            Ok(true)
+        })?;
+        report_state_notices(gctx, notices);
+        if claimed {
+            return Ok(Some((candidate, reservation)));
         }
-
-        return Ok(Some((candidate, reservation)));
+        drop(reservation);
     }
 
     Ok(None)
@@ -1931,6 +2404,7 @@ linked = ["z.env", "./a.env", "z.env"]
             dry_run: false,
             include_dirty: false,
             include_in_use: false,
+            allow_state_transition: false,
             session_name: "repo-scratch-test".to_string(),
         };
         let registered = vec![Worktree { path: scratch.clone(), head: None, branch: None }];
