@@ -27,3 +27,37 @@ fn worktree_new_reuses_existing_local_branch_without_source_prompt() {
     assert_eq!(feature.read_file("file.txt"), "base\n");
     assert_eq!(stdout(&feature.git(["status", "--short"])), "");
 }
+
+#[test]
+fn worktree_remove_deletes_clean_worktree_and_branch() {
+    let workspace = TestWorkspace::new("worktree-remove-clean");
+    let repo = workspace.git_repo("repo", "mega");
+
+    repo.commit_file("file.txt", "base\n", "initial");
+    repo.git(["branch", "feature"]);
+
+    let output = repo.bp(["worktree", "new", "feature", "--no-fetch", "--no-submodules", "--no-tmux"]);
+    assert_success(&output, "bp worktree new");
+
+    let worktree = repo.sibling("feature");
+    assert!(worktree.is_dir(), "expected worktree to exist at {}", worktree.display());
+
+    let output = repo.bp(["worktree", "remove", "feature", "--no-tmux"]);
+    assert_success(&output, "bp worktree remove");
+
+    assert!(!worktree.exists(), "expected worktree to be removed from {}", worktree.display());
+    assert_eq!(stdout(&repo.git(["branch", "--list", "feature"])), "");
+}
+
+#[test]
+fn worktree_prune_does_not_require_default_branch_discovery() {
+    let workspace = TestWorkspace::new("worktree-prune-detached-without-default");
+    let repo = workspace.git_repo("repo", "mega");
+
+    repo.commit_file("file.txt", "base\n", "initial");
+    repo.git(["config", "--unset-all", "branp.worktree.defaultBranch"]);
+    repo.git(["switch", "--detach", "HEAD"]);
+
+    let output = repo.bp(["worktree", "prune"]);
+    assert_success(&output, "bp worktree prune");
+}
