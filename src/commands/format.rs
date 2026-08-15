@@ -34,7 +34,7 @@ use crate::errors::{CliError, CliResult};
 
 pub fn cli() -> Command {
     Command::new("format")
-        .about("Format a C++ file using clang-format.")
+        .about("Format the current working directory")
         .arg(
             Arg::new("config")
                 .short('c')

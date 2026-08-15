@@ -162,6 +162,7 @@ fn get_version_string(is_verbose: bool) -> String {
 fn branp() -> Command {
     Command::new("bp")
         .allow_external_subcommands(true)
+        .disable_help_subcommand(true)
         .help_template(color_print::cstr!(
             "\
 <green,bold>Usage:</> <cyan,bold>bp</> <cyan>[OPTIONS] [COMMAND]</>
@@ -170,20 +171,29 @@ fn branp() -> Command {
 {options}
 
 <green,bold>Commands:</>
-    <cyan,bold>doctor</>          Diagnose and repair local CLI integration issues
-    <cyan,bold>cloc</>            Count lines of code quickly
-    <cyan,bold>format</>, <cyan,bold>f</>       Format the current working directory
-    <cyan,bold>git</>, <cyan,bold>g</>          Git-related commands
-    <cyan,bold>worktree</>, <cyan,bold>wt</>    Manage sibling Git worktrees
-    <cyan,bold>dbrun</>, <cyan,bold>r</>        Run a standalone C++ code file
-    <cyan,bold>sample-gen</>      Generate sample input/output files for a C++ file
-    <cyan,bold>test-samples</>    Compile a C++ file and run it against sample input/output
-    <cyan,bold>gen</>             Generate template file(s) from the config templates dir
-    <cyan,bold>uninstall</>       Delete the running bp binary and shell completions
-    <cyan,bold>completion</>      Generate shell completion scripts"
+{subcommands}"
         ))
         .arg(Arg::new("version").short('V').long("version").help("Print version info and exit").action(ArgAction::SetTrue))
         .arg(Arg::new("verbose").short('v').long("verbose").help("Use verbose output (-vv very verbose)").action(ArgAction::Count).global(true))
         .arg(Arg::new("quiet").short('q').long("quiet").help("Do not print log messages or output").action(ArgAction::SetTrue).global(true))
         .subcommands(commands::builtin())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_level_help_uses_registered_command_metadata() {
+        let help = branp().render_help().to_string();
+
+        assert!(help.contains("Format the current working directory [alias: f]"));
+        assert!(help.contains("Manage sibling Git worktrees [alias: wt]"));
+        assert!(!help.contains("Format a C++ file using clang-format."));
+    }
+
+    #[test]
+    fn cli_definition_is_valid() {
+        branp().debug_assert();
+    }
 }

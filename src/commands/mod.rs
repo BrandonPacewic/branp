@@ -38,7 +38,7 @@ pub fn builtin() -> Vec<Command> {
 fn with_builtin_aliases(mut command: Command) -> Command {
     let name = command.get_name().to_string();
     for alias in BUILTIN_ALIASES.iter().filter(|alias| alias.command == name) {
-        command = command.alias(alias.alias);
+        command = command.visible_alias(alias.alias);
     }
     command
 }
