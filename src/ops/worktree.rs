@@ -77,10 +77,10 @@ pub struct GoneOptions<'a> {
     pub tmux: bool,
 }
 
-pub struct Worktree {
-    pub path: PathBuf,
-    pub head: Option<String>,
-    pub branch: Option<String>,
+struct Worktree {
+    path: PathBuf,
+    head: Option<String>,
+    branch: Option<String>,
 }
 
 pub struct Repo {
@@ -770,17 +770,17 @@ fn status_summary(repo: &Path) -> Result<StatusSummary, CliError> {
     Ok(summary)
 }
 
-pub struct LinkStore {
+struct LinkStore {
     config: RepoConfig,
     current: PathBuf,
 }
 
 impl LinkStore {
-    pub fn new(base: impl Into<PathBuf>, current: impl Into<PathBuf>) -> Self {
+    fn new(base: impl Into<PathBuf>, current: impl Into<PathBuf>) -> Self {
         Self { config: RepoConfig::new(base), current: current.into() }
     }
 
-    pub fn track(&self, paths: &[&str], worktrees: &[PathBuf], force: bool) -> Result<Vec<PathBuf>, CliError> {
+    fn track(&self, paths: &[&str], worktrees: &[PathBuf], force: bool) -> Result<Vec<PathBuf>, CliError> {
         let mut config = LinkConfig::read(self)?;
         let mut tracked = Vec::new();
 
@@ -817,11 +817,11 @@ impl LinkStore {
         Ok(tracked)
     }
 
-    pub fn linked_paths(&self) -> Result<Vec<PathBuf>, CliError> {
+    fn linked_paths(&self) -> Result<Vec<PathBuf>, CliError> {
         Ok(LinkConfig::read(self)?.paths)
     }
 
-    pub fn sync(&self, worktrees: &[PathBuf], force: bool) -> CliResult {
+    fn sync(&self, worktrees: &[PathBuf], force: bool) -> CliResult {
         let config = LinkConfig::read(self)?;
         for rel in config.paths {
             let storage = self.link_store_dir()?.join(&rel);
@@ -918,7 +918,7 @@ fn path_to_config_string(path: &Path) -> Result<String, CliError> {
     path.to_str().map(str::to_string).ok_or_else(|| CliError::from(format!("linked path must be valid UTF-8: {}", path.display())))
 }
 
-pub fn has_submodules(repo: &Path) -> bool {
+fn has_submodules(repo: &Path) -> bool {
     repo.join(".gitmodules").is_file()
 }
 
@@ -1062,7 +1062,7 @@ fn target_dir(base: &Path, name: &str) -> PathBuf {
     PathBuf::from(format!("{}-{name}", base.display()))
 }
 
-pub fn worktrees(repo: &Path) -> Result<Vec<Worktree>, CliError> {
+fn worktrees(repo: &Path) -> Result<Vec<Worktree>, CliError> {
     let output = crate::utils::git::output(repo, &["worktree", "list", "--porcelain"])?;
     let mut items = Vec::new();
     let mut path = None;
@@ -1086,12 +1086,12 @@ pub fn worktrees(repo: &Path) -> Result<Vec<Worktree>, CliError> {
     Ok(items)
 }
 
-pub fn session_name_for(base: &Path, name: &str) -> String {
+fn session_name_for(base: &Path, name: &str) -> String {
     let repo_name = base.file_name().and_then(|name| name.to_str()).unwrap_or("worktree");
     format!("{repo_name}-{name}")
 }
 
-pub fn name_from_worktree_path(base: &Path, path: &Path) -> Option<String> {
+fn name_from_worktree_path(base: &Path, path: &Path) -> Option<String> {
     path.to_str()?.strip_prefix(&format!("{}-", base.display())).map(str::to_string)
 }
 
