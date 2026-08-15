@@ -13,17 +13,48 @@ pub fn cli() -> Command {
         .arg_required_else_help(false)
         .arg(Arg::new("fix").long("fix").help("Apply available fixes").action(ArgAction::SetTrue).global(true))
         .arg(Arg::new("yes").short('y').long("yes").help("Apply fixes without prompting").action(ArgAction::SetTrue).global(true))
-        .subcommand(Command::new("links").about("Check terminal hyperlink support"))
+        .subcommands(builtin())
+}
+
+type DoctorExec = fn(&mut GlobalContext, &ArgMatches) -> CliResult;
+
+fn builtin() -> Vec<Command> {
+    vec![links_cli()]
+}
+
+fn builtin_exec(cmd: &str) -> Option<DoctorExec> {
+    let exec = match cmd {
+        "links" => links_exec,
+        _ => return None,
+    };
+
+    Some(exec)
+}
+
+fn links_cli() -> Command {
+    Command::new("links").about("Check terminal hyperlink support")
 }
 
 pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
+    if let Some((cmd, sub)) = args.subcommand() {
+        if let Some(exec) = builtin_exec(cmd) {
+            return exec(gctx, sub);
+        }
+
+        return Err(CliError::from(format!("unknown doctor check `{cmd}`")));
+    }
+
+    run_check(gctx, CheckSelector::Links, args)
+}
+
+fn links_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
+    run_check(gctx, CheckSelector::Links, args)
+}
+
+fn run_check(gctx: &mut GlobalContext, selector: CheckSelector, args: &ArgMatches) -> CliResult {
+    let ctx = DoctorContext { home: gctx.home().clone() };
     let fix = args.get_flag("fix");
     let yes = args.get_flag("yes");
-    let selector = match args.subcommand() {
-        Some(("links", _)) | None => CheckSelector::Links,
-        Some((name, _)) => return Err(CliError::from(format!("unknown doctor check `{name}`"))),
-    };
-    let ctx = DoctorContext { home: gctx.home().clone() };
 
     for report in doctor::run(&ctx, selector) {
         gctx.shell().note(color_print::cformat!("<cyan,bold>{}</>", report.name));
@@ -89,4 +120,28 @@ fn apply_fixes(gctx: &mut GlobalContext, fixes: Vec<Fix>, yes: bool) -> CliResul
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doctor_subcommands_have_exec_handlers() {
+        for command in builtin() {
+            assert!(builtin_exec(command.get_name()).is_some(), "{} is missing an exec handler", command.get_name());
+        }
+    }
+
+    #[test]
+    fn doctor_cli_definition_is_valid() {
+        cli().debug_assert();
+    }
+
+    #[test]
+    fn doctor_allows_default_check_without_subcommand() {
+        let matches = cli().try_get_matches_from(["doctor"]).expect("default doctor command should parse");
+
+        assert_eq!(matches.subcommand_name(), None);
+    }
 }
