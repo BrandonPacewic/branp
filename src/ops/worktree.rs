@@ -20,6 +20,7 @@ pub struct PathOptions<'a> {
 
 pub struct ListOptions<'a> {
     pub base: &'a Path,
+    pub current: &'a Path,
     pub default_branch: &'a str,
     pub pr_lookup: bool,
 }
@@ -137,7 +138,7 @@ pub fn list(gctx: &mut GlobalContext, options: &ListOptions<'_>) -> CliResult {
     let path_root = common_parent(&worktrees);
     let verbose = gctx.is_verbose();
     if !crate::utils::terminal::supports_dynamic_lines() {
-        let rows = resolve_worktree_rows(options.base, options.default_branch, &worktrees, &path_root, verbose)?;
+        let rows = resolve_worktree_rows(options.base, options.current, options.default_branch, &worktrees, &path_root, verbose)?;
         let pr_numbers = if options.pr_lookup { crate::utils::gh::open_pull_requests(options.base).unwrap_or_default() } else { Vec::new() };
         let pr_render = if options.pr_lookup { PrRender::Resolved(&pr_numbers) } else { PrRender::Disabled };
 
@@ -147,7 +148,7 @@ pub fn list(gctx: &mut GlobalContext, options: &ListOptions<'_>) -> CliResult {
         return Ok(());
     }
 
-    render_worktree_rows_dynamic(options.base, options.default_branch, worktrees, &path_root, verbose, options.pr_lookup)
+    render_worktree_rows_dynamic(options.base, options.current, options.default_branch, worktrees, &path_root, verbose, options.pr_lookup)
 }
 
 pub fn track(gctx: &mut GlobalContext, options: &TrackOptions<'_>) -> CliResult {
@@ -310,6 +311,7 @@ pub fn gone(gctx: &mut GlobalContext, options: &GoneOptions<'_>) -> CliResult {
 
 fn resolve_worktree_rows(
     base: &Path,
+    current: &Path,
     default_branch: &str,
     worktrees: &[Worktree],
     path_root: &Path,
@@ -317,7 +319,7 @@ fn resolve_worktree_rows(
 ) -> Result<Vec<WorktreeRow>, CliError> {
     let remote_branches = crate::utils::git::remote_branches(base, "origin").unwrap_or_default();
     let tmux_sessions: HashSet<_> = crate::utils::tmux::sessions().unwrap_or_default().into_iter().collect();
-    let mut rows: Vec<_> = worktrees.iter().map(|worktree| WorktreeRow::from_worktree(base, worktree, path_root, verbose)).collect();
+    let mut rows: Vec<_> = worktrees.iter().map(|worktree| WorktreeRow::from_worktree(base, current, worktree, path_root, verbose)).collect();
     let handles: Vec<_> = worktrees
         .iter()
         .enumerate()
@@ -345,13 +347,14 @@ fn resolve_worktree_rows(
 
 fn render_worktree_rows_dynamic(
     base: &Path,
+    current: &Path,
     default_branch: &str,
     worktrees: Vec<Worktree>,
     path_root: &Path,
     verbose: bool,
     pr_lookup: bool,
 ) -> CliResult {
-    let rows: Vec<_> = worktrees.iter().map(|worktree| WorktreeRow::from_worktree(base, worktree, path_root, verbose)).collect();
+    let rows: Vec<_> = worktrees.iter().map(|worktree| WorktreeRow::from_worktree(base, current, worktree, path_root, verbose)).collect();
     let (tx, rx) = mpsc::channel();
     let mut pending = 0;
 
@@ -450,6 +453,7 @@ struct WorktreeRow {
     source_path: PathBuf,
     source_base: PathBuf,
     base: bool,
+    current: bool,
     verbose: bool,
     status: Option<StatusSummary>,
     remote_gone: Option<bool>,
@@ -459,7 +463,7 @@ struct WorktreeRow {
 }
 
 impl WorktreeRow {
-    fn from_worktree(base: &Path, worktree: &Worktree, path_root: &Path, verbose: bool) -> Self {
+    fn from_worktree(base: &Path, current: &Path, worktree: &Worktree, path_root: &Path, verbose: bool) -> Self {
         let branch = worktree.branch.as_deref().unwrap_or("detached");
         Self {
             path: display_path(&worktree.path, path_root),
@@ -467,7 +471,8 @@ impl WorktreeRow {
             head: worktree.head.as_deref().and_then(|head| head.get(..7)).unwrap_or("").to_string(),
             source_path: worktree.path.clone(),
             source_base: base.to_path_buf(),
-            base: worktree.path == base,
+            base: same_worktree_path(&worktree.path, base),
+            current: same_worktree_path(&worktree.path, current),
             verbose,
             status: None,
             remote_gone: None,
@@ -498,15 +503,22 @@ impl WorktreeRow {
     }
 
     fn badges(&self, pr: DynamicBadge, spinner: Option<char>) -> WorktreeBadges {
-        let (state, state_color) = if self.base {
-            ("base".to_string(), BadgeColor::Green)
-        } else {
-            match &self.status {
-                Some(status) if status.is_dirty() => (status.tracked_badge(), BadgeColor::YellowBold),
-                Some(_) => ("clean".to_string(), BadgeColor::Green),
-                None => (loading_badge("status", spinner), BadgeColor::Black),
+        let (mut state, state_color) = match &self.status {
+            Some(status) if status.is_dirty() => {
+                let details = status.tracked_badge();
+                let cleanliness = if details.is_empty() { "dirty".to_string() } else { format!("dirty ({details})") };
+                (cleanliness, BadgeColor::YellowBold)
             }
+            Some(_) => ("clean".to_string(), BadgeColor::Green),
+            None => (loading_badge("status", spinner), BadgeColor::Black),
         };
+
+        if self.base {
+            state = format!("base,{state}");
+        }
+        if self.current {
+            state = format!("{state},current");
+        }
 
         WorktreeBadges {
             state,
@@ -768,8 +780,15 @@ fn display_path(path: &Path, root: &Path) -> String {
     path.strip_prefix(root).ok().filter(|path| !path.as_os_str().is_empty()).unwrap_or(path).display().to_string()
 }
 
+fn same_worktree_path(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
 fn status_summary(repo: &Path) -> Result<StatusSummary, CliError> {
-    let output = crate::utils::git::output(repo, &["status", "--porcelain"])?;
+    let output = crate::utils::git::output(repo, &["status", "--porcelain", "--untracked-files=all"])?;
     let mut summary = StatusSummary::default();
 
     for line in output.lines() {

@@ -121,3 +121,36 @@ fn worktree_prune_does_not_require_default_branch_discovery() {
     let output = repo.bp(["worktree", "prune"]);
     assert_success(&output, "bp worktree prune");
 }
+
+#[test]
+fn worktree_list_reports_base_named_and_detached_worktrees_with_state() {
+    let workspace = TestWorkspace::new("worktree-list-status");
+    let repo = workspace.git_repo("repo", "mega");
+
+    repo.commit_file("file.txt", "base\n", "initial");
+    repo.git(["branch", "feature"]);
+
+    let named_path = repo.sibling("feature");
+    repo.git(["worktree", "add", named_path.to_str().unwrap(), "feature"]);
+    let scratch_path = repo.sibling("scratch");
+    repo.git(["worktree", "add", "--detach", scratch_path.to_str().unwrap(), "HEAD"]);
+
+    std::fs::write(named_path.join("untracked.txt"), "dirty\n").unwrap();
+    repo.git(["config", "status.showUntrackedFiles", "no"]);
+
+    let output = GitRepo::from_path(&named_path).bp(["worktree", "list", "--no-pr"]);
+    assert_success(&output, "bp worktree list");
+    let text = stdout(&output);
+
+    let base_line = text.lines().find(|line| line.contains("repo  ")).expect("base worktree row");
+    assert!(base_line.contains("base,clean"), "base row did not report clean state:\n{text}");
+
+    let named_line = text.lines().find(|line| line.contains("repo-feature")).expect("named worktree row");
+    assert!(named_line.contains("feature"), "named row did not report its branch:\n{text}");
+    assert!(named_line.contains("dirty"), "named row did not report dirty state:\n{text}");
+    assert!(named_line.contains("current"), "named row did not report current state:\n{text}");
+
+    let scratch_line = text.lines().find(|line| line.contains("repo-scratch")).expect("detached worktree row");
+    assert!(scratch_line.contains("detached"), "scratch row did not report detached state:\n{text}");
+    assert!(scratch_line.contains("clean"), "scratch row did not report clean state:\n{text}");
+}
