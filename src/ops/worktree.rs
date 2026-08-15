@@ -1,11 +1,13 @@
 use std::collections::HashSet;
 use std::fs;
+use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use fs2::FileExt;
 use toml_edit::{value, Array, DocumentMut, Item};
 
 use crate::config::RepoConfig;
@@ -258,13 +260,26 @@ pub fn new(gctx: &mut GlobalContext, options: &NewOptions<'_>) -> CliResult {
 }
 
 pub fn scratch(gctx: &mut GlobalContext, options: &ScratchOptions<'_>) -> CliResult {
-    let target = reserve_scratch_target(options.home)?;
+    let root = scratch_dir(options.home);
+    fs::create_dir_all(&root)?;
+    let registered_worktrees = worktrees(options.base)?;
+
+    if let Some((target, reservation)) = find_reusable_scratch(gctx, options.base, &root, &registered_worktrees)? {
+        return setup_scratch(gctx, options, target, reservation);
+    }
+
+    let target = reserve_scratch_target_in(&root, &format_scratch_prefix())?;
+    let reservation = try_reserve_scratch(&root, &target)?.ok_or_else(|| CliError::from("could not reserve a new scratch worktree"))?;
     let target_arg = path_arg(&target);
     if let Err(error) = crate::utils::git::run(options.base, &["worktree", "add", "--detach", target_arg.as_str()]) {
         let _ = fs::remove_dir(&target);
         return Err(error);
     }
 
+    setup_scratch(gctx, options, target, reservation)
+}
+
+fn setup_scratch(gctx: &mut GlobalContext, options: &ScratchOptions<'_>, target: PathBuf, reservation: ScratchReservation) -> CliResult {
     if options.submodules {
         crate::utils::git::run(&target, &["submodule", "update", "--init", "--recursive"])?;
     }
@@ -272,8 +287,9 @@ pub fn scratch(gctx: &mut GlobalContext, options: &ScratchOptions<'_>) -> CliRes
     sync(gctx, &SyncOptions { base: options.base, current: options.current, worktrees: vec![target.clone()], quiet: true, force: false })?;
 
     gctx.shell().note(target.display());
-    enter_scratch_shell(&target)?;
-    Ok(())
+    let result = enter_scratch_shell(&target);
+    drop(reservation);
+    result
 }
 
 pub fn return_worktree(gctx: &mut GlobalContext, options: &ReturnOptions<'_>) -> CliResult {
@@ -1183,12 +1199,19 @@ fn scratch_dir(home: &Path) -> PathBuf {
     home.join(".bp/worktrees")
 }
 
-fn reserve_scratch_target(home: &Path) -> Result<PathBuf, CliError> {
-    let root = scratch_dir(home);
-    fs::create_dir_all(&root)?;
+struct ScratchReservation {
+    lock: fs::File,
+}
+
+impl Drop for ScratchReservation {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.lock);
+    }
+}
+
+fn format_scratch_prefix() -> String {
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-    let prefix = format!("scratch-{timestamp}-{}", std::process::id());
-    reserve_scratch_target_in(&root, &prefix)
+    format!("scratch-{timestamp}-{}", std::process::id())
 }
 
 fn reserve_scratch_target_in(root: &Path, prefix: &str) -> Result<PathBuf, CliError> {
@@ -1212,6 +1235,110 @@ fn enter_scratch_shell(target: &Path) -> CliResult {
         Ok(())
     } else {
         Err(CliError::from(format!("scratch shell exited unsuccessfully: {}", shell.to_string_lossy())))
+    }
+}
+
+fn find_reusable_scratch(
+    gctx: &mut GlobalContext,
+    base: &Path,
+    root: &Path,
+    worktrees: &[Worktree],
+) -> Result<Option<(PathBuf, ScratchReservation)>, CliError> {
+    let root_path = root.to_path_buf();
+    let root = root.canonicalize()?;
+    let mut candidates: Vec<_> = worktrees.iter().collect();
+    candidates.sort_by(|left, right| left.path.cmp(&right.path));
+
+    for worktree in candidates {
+        let registered = &worktree.path;
+        let Ok(candidate) = registered.canonicalize() else {
+            if registered.starts_with(&root_path) {
+                warn_scratch_skip(gctx, registered, "registered path is missing");
+            }
+            continue;
+        };
+        if candidate.parent() != Some(root.as_path()) {
+            continue;
+        }
+        let Some(name) = candidate.file_name().and_then(|name| name.to_str()) else {
+            warn_scratch_skip(gctx, &candidate, "path has no valid name");
+            continue;
+        };
+        if !name.starts_with("scratch-") {
+            warn_scratch_skip(gctx, &candidate, "registered worktree is not a scratch worktree");
+            continue;
+        }
+        if worktree.branch.is_some() {
+            warn_scratch_skip(gctx, &candidate, "worktree is named and not detached");
+            continue;
+        }
+
+        let Some(reservation) = try_reserve_scratch(&root, &candidate)? else {
+            warn_scratch_skip(gctx, &candidate, "short-lived acquisition reservation is held");
+            continue;
+        };
+
+        if let Err(reason) = reusable_scratch_check(base, &candidate) {
+            warn_scratch_skip(gctx, &candidate, reason);
+            drop(reservation);
+            continue;
+        }
+
+        return Ok(Some((candidate, reservation)));
+    }
+
+    Ok(None)
+}
+
+fn reusable_scratch_check(base: &Path, candidate: &Path) -> Result<(), String> {
+    let status = status_summary(candidate).map_err(|error| format!("could not inspect status: {}", error.message))?;
+    if status.is_dirty() {
+        return Err(format!("worktree is dirty: {}", dirty_status_reason(&status)));
+    }
+
+    let session = candidate.file_name().and_then(|name| name.to_str()).map(|name| session_name_for(base, name));
+    let mut in_use =
+        crate::utils::in_use::inspect(candidate, session.as_deref()).map_err(|error| format!("could not inspect use: {}", error.message))?;
+    in_use.processes.retain(|process| process.pid != std::process::id());
+    if in_use.is_in_use() {
+        return Err(format!("worktree is in use: {}", in_use.reasons().join(", ")));
+    }
+
+    Ok(())
+}
+
+fn dirty_status_reason(status: &StatusSummary) -> String {
+    let mut reasons = Vec::new();
+    if status.staged > 0 {
+        reasons.push(format!("staged:{}", status.staged));
+    }
+    if status.modified > 0 {
+        reasons.push(format!("modified:{}", status.modified));
+    }
+    if status.deleted > 0 {
+        reasons.push(format!("deleted:{}", status.deleted));
+    }
+    if status.untracked > 0 {
+        reasons.push(format!("untracked:{}", status.untracked));
+    }
+    if status.submodule > 0 {
+        reasons.push(format!("submodule-dirty:{}", status.submodule));
+    }
+    reasons.join(", ")
+}
+
+fn warn_scratch_skip(gctx: &mut GlobalContext, path: &Path, reason: impl std::fmt::Display) {
+    gctx.shell().warn(format!("skipping scratch worktree {}: {reason}", path.display()));
+}
+
+fn try_reserve_scratch(root: &Path, target: &Path) -> Result<Option<ScratchReservation>, CliError> {
+    let name = target.file_name().and_then(|name| name.to_str()).ok_or_else(|| CliError::from("scratch worktree path has no valid name"))?;
+    let marker = root.join(format!(".{name}.reservation"));
+    let lock = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(marker)?;
+    match lock.try_lock_exclusive() {
+        Ok(()) => Ok(Some(ScratchReservation { lock })),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -1367,6 +1494,22 @@ linked = ["z.env", "./a.env", "z.env"]
 
         let target = reserve_scratch_target_in(&root, "scratch-test").unwrap();
         assert_eq!(target, root.join("scratch-test-1"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scratch_reservation_is_exclusive_and_releases_after_drop() {
+        let root = std::env::temp_dir().join(format!("branp-scratch-lock-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("scratch-test");
+
+        let first = try_reserve_scratch(&root, &target).unwrap().unwrap();
+        assert!(try_reserve_scratch(&root, &target).unwrap().is_none());
+        drop(first);
+        let third = try_reserve_scratch(&root, &target).unwrap().unwrap();
+        drop(third);
 
         fs::remove_dir_all(root).unwrap();
     }

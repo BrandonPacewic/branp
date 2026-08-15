@@ -46,6 +46,10 @@ impl GitRepo {
         Self { path: path.into() }
     }
 
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     pub fn sibling(&self, name: &str) -> PathBuf {
         PathBuf::from(format!("{}-{name}", self.path.display()))
     }
