@@ -32,9 +32,9 @@ use std::process::Command as ProcessCommand;
 use crate::context::GlobalContext;
 use crate::errors::{CliError, CliResult};
 
-pub fn command() -> Command {
+pub fn cli() -> Command {
     Command::new("format")
-        .about("Format a C++ file using clang-format.")
+        .about("Format the current working directory")
         .arg(
             Arg::new("config")
                 .short('c')

@@ -8,7 +8,7 @@ use clap::{ArgMatches, Command};
 use crate::context::GlobalContext;
 use crate::errors::{CliError, CliResult};
 
-pub fn command() -> Command {
+pub fn cli() -> Command {
     Command::new("uninstall").about("Delete the running bp binary and shell completions").long_about(
         "\
 Delete the running bp binary and installed shell completions from disk.

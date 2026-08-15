@@ -1,16 +1,14 @@
 use std::ffi::OsString;
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 
 use branp_cli::context::GlobalContext;
 use branp_cli::errors::{CliError, CliResult};
 use branp_cli::version::get_version_info;
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use clap_complete::{CompleteEnv, Shell};
+use clap_complete::CompleteEnv;
 
 pub use branp_cli::{context, doctor, errors, ops, utils};
-
-use crate::completions::completion_script;
 
 mod commands;
 mod completions;
@@ -56,47 +54,75 @@ fn run(gctx: &mut GlobalContext) -> CliResult {
             }
         };
 
-        if cmd == "completion" {
-            configure_gctx(gctx, &expanded_args, subcommand_args, global_args)?;
-            install_completion(gctx, subcommand_args)?;
-        } else {
-            let exec = Exec::infer(cmd)?;
-            configure_gctx(gctx, &expanded_args, subcommand_args, global_args)?;
-            exec.exec(gctx, subcommand_args)?;
-        }
+        let exec = Exec::infer(cmd)?;
+        configure_gctx(gctx, &expanded_args, subcommand_args, global_args)?;
+        exec.exec(gctx, subcommand_args)?;
     }
 
     Ok(())
 }
 
 enum Exec {
-    Branp(commands::Exec),
+    Builtin(commands::Exec),
+    External(String),
 }
 
 impl Exec {
     fn infer(cmd: &str) -> Result<Self, CliError> {
-        if let Some(exec) = commands::branp_exec(cmd) {
-            Ok(Self::Branp(exec))
+        if let Some(exec) = commands::builtin_exec(cmd) {
+            Ok(Self::Builtin(exec))
         } else {
-            Err(CliError::new(format!("`{cmd}` is not a valid subcommand"), 1))
+            Ok(Self::External(cmd.to_string()))
         }
     }
 
     fn exec(self, gctx: &mut context::GlobalContext, subcommand_args: &ArgMatches) -> CliResult {
         match self {
-            Self::Branp(exec) => exec(gctx, subcommand_args),
+            Self::Builtin(exec) => exec(gctx, subcommand_args),
+            Self::External(cmd) => execute_external_subcommand(gctx, &cmd, subcommand_args),
         }
     }
 }
 
-const BUILTIN_ALIASES: [(&str, &str, &str); 3] = [("f", "format", "alias: format"), ("g", "git", "alias: git"), ("r", "dbrun", "alias: dbrun")];
+fn execute_external_subcommand(gctx: &mut GlobalContext, cmd: &str, subcommand_args: &ArgMatches) -> CliResult {
+    let Some(path) = find_external_subcommand(cmd) else {
+        return Err(CliError::new(format!("no such command: `{cmd}`\n\nhelp: external bp subcommands must be named `bp-{cmd}` and be on PATH"), 101));
+    };
 
-fn builtin_aliases_execs(cmd: &str) -> Option<&(&str, &str, &str)> {
-    BUILTIN_ALIASES.iter().find(|alias| alias.0 == cmd)
+    let status = ProcessCommand::new(path).args(external_subcommand_args(cmd, subcommand_args)).current_dir(gctx.cwd()).status()?;
+    if let Some(code) = status.code() {
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(CliError::new(format!("external subcommand `{cmd}` failed with exit code {code}"), code))
+        }
+    } else {
+        Err(CliError::new(format!("external subcommand `{cmd}` terminated by signal"), 1))
+    }
 }
 
-fn aliased_command(command: &str) -> Option<Vec<String>> {
-    builtin_aliases_execs(command).map(|alias| vec![alias.1.to_string()])
+fn external_subcommand_args(cmd: &str, subcommand_args: &ArgMatches) -> Vec<OsString> {
+    let mut args = vec![OsString::from(cmd)];
+    args.extend(subcommand_args.get_many::<OsString>("").unwrap_or_default().cloned());
+    args
+}
+
+fn find_external_subcommand(cmd: &str) -> Option<PathBuf> {
+    let command_exe = format!("bp-{cmd}{}", std::env::consts::EXE_SUFFIX);
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).map(|dir| dir.join(&command_exe)).find(|path| is_executable(path))
+}
+
+#[cfg(unix)]
+fn is_executable(path: impl AsRef<Path>) -> bool {
+    use std::os::unix::prelude::*;
+
+    std::fs::metadata(path).map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn is_executable(path: impl AsRef<Path>) -> bool {
+    path.as_ref().is_file()
 }
 
 #[derive(Default)]
@@ -113,8 +139,8 @@ impl GlobalArgs {
 
 fn expand_aliases(gctx: &mut GlobalContext, args: ArgMatches, mut already_expanded: Vec<String>) -> Result<(ArgMatches, GlobalArgs), CliError> {
     if let Some((cmd, subcommand_args)) = args.subcommand() {
-        let exec = commands::branp_exec(cmd);
-        let aliased_cmd = aliased_command(cmd);
+        let exec = commands::builtin_exec(cmd);
+        let aliased_cmd = commands::aliased_command(cmd);
 
         match (exec, aliased_cmd) {
             (Some(_), Some(_)) => {
@@ -181,6 +207,7 @@ fn get_version_string(is_verbose: bool) -> String {
 fn branp() -> Command {
     Command::new("bp")
         .allow_external_subcommands(true)
+        .disable_help_subcommand(true)
         .help_template(color_print::cstr!(
             "\
 <green,bold>Usage:</> <cyan,bold>bp</> <cyan>[OPTIONS] [COMMAND]</>
@@ -189,103 +216,48 @@ fn branp() -> Command {
 {options}
 
 <green,bold>Commands:</>
-    <cyan,bold>doctor</>          Diagnose and repair local CLI integration issues
-    <cyan,bold>cloc</>            Count lines of code quickly
-    <cyan,bold>format</>, <cyan,bold>f</>       Format the current working directory
-    <cyan,bold>git</>, <cyan,bold>g</>          Git-related commands
-    <cyan,bold>worktree</>, <cyan,bold>wt</>    Manage sibling Git worktrees
-    <cyan,bold>dbrun</>, <cyan,bold>r</>        Run a standalone C++ code file
-    <cyan,bold>sample-gen</>      Generate sample input/output files for a C++ file
-    <cyan,bold>test-samples</>    Compile a C++ file and run it against sample input/output
-    <cyan,bold>gen</>             Generate template file(s) from the config templates dir
-    <cyan,bold>uninstall</>       Delete the running bp binary and shell completions
-    <cyan,bold>completion</>      Generate shell completion scripts"
+{subcommands}"
         ))
         .arg(Arg::new("version").short('V').long("version").help("Print version info and exit").action(ArgAction::SetTrue))
         .arg(Arg::new("verbose").short('v').long("verbose").help("Use verbose output (-vv very verbose)").action(ArgAction::Count).global(true))
         .arg(Arg::new("quiet").short('q').long("quiet").help("Do not print log messages or output").action(ArgAction::SetTrue).global(true))
-        .subcommand(
-            Command::new("completion")
-                .about("Generate shell completion scripts")
-                .arg(Arg::new("shell").help("Shell to generate completions for").required(true).value_parser(clap::value_parser!(Shell)))
-                .arg(Arg::new("print").long("print").help("Print the completion script instead of installing it").action(ArgAction::SetTrue)),
-        )
-        .subcommands(commands::branp())
+        .subcommands(commands::builtin())
 }
 
-fn install_completion(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
-    let shell = args.get_one::<Shell>("shell").expect("required by clap").to_owned();
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    if args.get_flag("print") {
-        print!("{}", completion_script(shell)?);
-        return Ok(());
+    #[test]
+    fn top_level_help_uses_registered_command_metadata() {
+        let help = branp().render_help().to_string();
+
+        assert!(help.contains("Format the current working directory [alias: f]"));
+        assert!(help.contains("Manage sibling Git worktrees [alias: wt]"));
+        assert!(!help.contains("Format a C++ file using clang-format."));
     }
 
-    let path = completion_path(gctx.home(), shell);
-    let Some(parent) = path.parent() else {
-        return Err(CliError::from("completion path does not have a parent directory"));
-    };
-
-    fs::create_dir_all(parent)?;
-
-    fs::write(&path, completion_script(shell)?)?;
-    if shell == Shell::Zsh {
-        remove_zsh_completion_caches(gctx.home())?;
+    #[test]
+    fn cli_definition_is_valid() {
+        branp().debug_assert();
     }
 
-    gctx.shell().note(format!("Installed completion script to {}", path.display()));
-    print_shell_reload_hint(gctx, shell);
-
-    Ok(())
-}
-
-fn completion_path(home: &Path, shell: Shell) -> PathBuf {
-    match shell {
-        Shell::Bash => home.join(".local/share/bash-completion/completions/bp"),
-        Shell::Elvish => home.join(".config/elvish/lib/bp-completions.elv"),
-        Shell::Fish => home.join(".config/fish/completions/bp.fish"),
-        Shell::PowerShell => home.join("Documents/PowerShell/Modules/bp/_bp.ps1"),
-        Shell::Zsh => zsh_completion_path(home),
-        _ => home.join(".local/share/bp/completions/bp"),
-    }
-}
-
-fn zsh_completion_path(home: &Path) -> PathBuf {
-    let oh_my_zsh = home.join(".oh-my-zsh");
-    if oh_my_zsh.exists() {
-        return oh_my_zsh.join("custom/completions/_bp");
-    }
-
-    home.join(".zsh/completions/_bp")
-}
-
-fn remove_zsh_completion_caches(home: &Path) -> CliResult {
-    let entries = match fs::read_dir(home) {
-        Ok(entries) => entries,
-        Err(_) => return Ok(()),
-    };
-
-    for entry in entries.filter_map(Result::ok) {
-        let path = entry.path();
-        let is_zcompdump = path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with(".zcompdump"));
-
-        if is_zcompdump && path.is_file() {
-            fs::remove_file(&path)?;
+    #[test]
+    fn unknown_subcommands_are_external_dispatch_candidates() {
+        match Exec::infer("outside").expect("unknown commands should dispatch externally") {
+            Exec::External(cmd) => assert_eq!(cmd, "outside"),
+            Exec::Builtin(_) => panic!("unknown command resolved as built-in"),
         }
     }
 
-    Ok(())
-}
+    #[test]
+    fn external_dispatch_forwards_command_name_and_trailing_args() {
+        let matches = branp().try_get_matches_from(["bp", "outside", "one", "--two"]).expect("external command should parse");
+        let (_, subcommand_args) = matches.subcommand().expect("external subcommand");
 
-fn print_shell_reload_hint(gctx: &mut GlobalContext, shell: Shell) {
-    let hint = match shell {
-        Shell::Bash => "Restart your shell, or source the installed completion file.",
-        Shell::Elvish => "Restart elvish, or add `use bp-completions` to ~/.config/elvish/rc.elv.",
-        Shell::Fish => "Restart fish, or run `exec fish`.",
-        Shell::PowerShell => "Source the installed _bp.ps1 file from your PowerShell profile.",
-        Shell::Zsh => "Restart zsh, or run `autoload -Uz compinit && compinit`.",
-        _ => "Restart your shell after wiring the installed completion file into your shell config.",
-    };
-
-    gctx.shell().note(hint);
+        assert_eq!(
+            external_subcommand_args("outside", subcommand_args),
+            vec![OsString::from("outside"), OsString::from("one"), OsString::from("--two")]
+        );
+    }
 }

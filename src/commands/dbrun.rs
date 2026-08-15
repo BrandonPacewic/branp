@@ -6,7 +6,7 @@ use std::time::Instant;
 use crate::context::GlobalContext;
 use crate::errors::{CliError, CliResult};
 
-pub fn command() -> Command {
+pub fn cli() -> Command {
     Command::new("dbrun").about("Compile and execute a standalone C++ file.").arg(Arg::new("file").help("The file to run on").required(true).index(1))
 }
 

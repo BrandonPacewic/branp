@@ -22,7 +22,7 @@ EXAMPLES:
     # Generate 3 copies named A.cpp, B.cpp, C.cpp
     bp gen test.cpp -n 3";
 
-pub fn command() -> Command {
+pub fn cli() -> Command {
     Command::new("gen")
         .about("Generate template file(s) from <config dir>/branp/templates")
         .long_about(LONG_ABOUT)

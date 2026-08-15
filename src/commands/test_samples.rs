@@ -7,7 +7,7 @@ use std::process::{Command as ProcessCommand, Stdio};
 use crate::context::GlobalContext;
 use crate::errors::{CliError, CliResult};
 
-pub fn command() -> Command {
+pub fn cli() -> Command {
     Command::new("test-samples")
         .about("Compile a C++ file and run it against sample input/output files.")
         .long_about(
