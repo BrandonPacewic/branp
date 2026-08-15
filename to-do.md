@@ -52,12 +52,12 @@ The following tasks make those worktrees reusable and safely manageable.
 
 ### Pruning
 
-- [ ] Extend pruning to inspect scratch worktrees as well as named worktrees.
-- [ ] Remove only clean, available, detached scratch worktrees by default.
-- [ ] Keep pruning a dry run unless explicitly confirmed.
-- [ ] Report skipped worktrees with actionable reasons.
-- [ ] Add optional age-based cleanup for scratch worktrees.
-- [ ] Report reclaimed disk space.
+- [x] Extend pruning to inspect scratch worktrees as well as named worktrees.
+- [x] Remove only clean, available, detached scratch worktrees by default.
+- [x] Keep pruning a dry run unless explicitly confirmed.
+- [x] Report skipped worktrees with actionable reasons.
+- [x] Add optional age-based cleanup for scratch worktrees.
+- [x] Report reclaimed disk space.
 
 ### Persistent State and Recovery
 
