@@ -26,11 +26,11 @@ The following tasks make those worktrees reusable and safely manageable.
 
 - [ ] Detect available scratch worktrees before creating a new one.
 - [ ] Treat a scratch worktree as reusable only when it is clean, detached, valid, and not currently in use.
-- [ ] Add a return operation that can infer the current worktree when invoked from inside it.
-- [ ] Refuse to discard tracked or untracked changes without confirmation.
-- [ ] On return, detach `HEAD`, remove tracked and ordinary untracked changes, and preserve ignored build caches and dependencies where possible.
+- [x] Add a return operation that can infer the current worktree when invoked from inside it.
+- [x] Refuse to discard tracked or untracked changes without confirmation.
+- [x] On return, detach `HEAD`, remove tracked and ordinary untracked changes, and preserve ignored build caches and dependencies where possible.
 - [ ] Mark the returned scratch worktree available for the next no-argument `new` or `n` operation.
-- [ ] Run normal worktree link synchronization and scratch setup after reuse.
+- [x] Run normal worktree link synchronization and scratch setup after reuse.
 - [ ] Ensure two concurrent acquisitions cannot select the same scratch worktree.
 
 ### In-Use Detection
