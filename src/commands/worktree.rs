@@ -1,19 +1,16 @@
 //! Git worktree helpers.
 
-use std::path::{Path, PathBuf};
-
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::context::GlobalContext;
 use crate::errors::{CliError, CliResult};
 use crate::ops::worktree as ops;
-use crate::utils::git;
 
 pub fn cli() -> Command {
     Command::new("worktree").about("Manage sibling Git worktrees").subcommand_required(true).arg_required_else_help(true).subcommands(builtin())
 }
 
-type WorktreeExec = fn(&mut GlobalContext, &Repo, &ArgMatches) -> CliResult;
+type WorktreeExec = fn(&mut GlobalContext, &ops::Repo, &ArgMatches) -> CliResult;
 
 fn builtin() -> Vec<Command> {
     vec![list_cli(), path_cli(), new_cli(), remove_cli(), prune_cli(), gone_cli(), track_cli(), links_cli(), sync_cli()]
@@ -37,7 +34,7 @@ fn builtin_exec(cmd: &str) -> Option<WorktreeExec> {
 }
 
 pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
-    let repo = Repo::discover(gctx.cwd())?;
+    let repo = ops::Repo::discover(gctx.cwd())?;
 
     if let Some((cmd, sub)) = args.subcommand() {
         if let Some(exec) = builtin_exec(cmd) {
@@ -110,15 +107,15 @@ fn sync_cli() -> Command {
         .arg(Arg::new("force").short('f').long("force").help("Replace existing non-symlink paths").action(ArgAction::SetTrue))
 }
 
-fn list_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
+fn list_exec(gctx: &mut GlobalContext, repo: &ops::Repo, args: &ArgMatches) -> CliResult {
     ops::list(gctx, &ops::ListOptions { base: &repo.base, default_branch: &repo.default_branch, pr_lookup: !args.get_flag("no-pr") })
 }
 
-fn path_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
+fn path_exec(gctx: &mut GlobalContext, repo: &ops::Repo, args: &ArgMatches) -> CliResult {
     ops::path(gctx, &ops::PathOptions { base: &repo.base, default_branch: &repo.default_branch, name: required(args, "name")? })
 }
 
-fn new_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
+fn new_exec(gctx: &mut GlobalContext, repo: &ops::Repo, args: &ArgMatches) -> CliResult {
     let name = required(args, "name")?;
     let branch = args.get_one::<String>("branch").map_or(name, String::as_str);
     ops::new(
@@ -137,7 +134,7 @@ fn new_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResu
     )
 }
 
-fn remove_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
+fn remove_exec(gctx: &mut GlobalContext, repo: &ops::Repo, args: &ArgMatches) -> CliResult {
     let name = required(args, "name")?;
     ops::remove(
         gctx,
@@ -152,11 +149,11 @@ fn remove_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliR
     )
 }
 
-fn prune_exec(_gctx: &mut GlobalContext, repo: &Repo, _args: &ArgMatches) -> CliResult {
+fn prune_exec(_gctx: &mut GlobalContext, repo: &ops::Repo, _args: &ArgMatches) -> CliResult {
     ops::prune(&repo.base)
 }
 
-fn gone_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
+fn gone_exec(gctx: &mut GlobalContext, repo: &ops::Repo, args: &ArgMatches) -> CliResult {
     ops::gone(
         gctx,
         &ops::GoneOptions {
@@ -169,56 +166,34 @@ fn gone_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliRes
     )
 }
 
-fn track_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
+fn track_exec(gctx: &mut GlobalContext, repo: &ops::Repo, args: &ArgMatches) -> CliResult {
     ops::track(
         gctx,
         &ops::TrackOptions {
             base: &repo.base,
             current: &repo.current,
             paths: required_many(args, "path")?,
-            worktrees: worktree_paths(repo)?,
+            worktrees: repo.worktree_paths()?,
             force: args.get_flag("force"),
         },
     )
 }
 
-fn links_exec(gctx: &mut GlobalContext, repo: &Repo, _args: &ArgMatches) -> CliResult {
+fn links_exec(gctx: &mut GlobalContext, repo: &ops::Repo, _args: &ArgMatches) -> CliResult {
     ops::links(gctx, &ops::LinksOptions { base: &repo.base, current: &repo.current })
 }
 
-fn sync_exec(gctx: &mut GlobalContext, repo: &Repo, args: &ArgMatches) -> CliResult {
+fn sync_exec(gctx: &mut GlobalContext, repo: &ops::Repo, args: &ArgMatches) -> CliResult {
     ops::sync(
         gctx,
-        &ops::SyncOptions { base: &repo.base, current: &repo.current, worktrees: worktree_paths(repo)?, quiet: false, force: args.get_flag("force") },
+        &ops::SyncOptions {
+            base: &repo.base,
+            current: &repo.current,
+            worktrees: repo.worktree_paths()?,
+            quiet: false,
+            force: args.get_flag("force"),
+        },
     )
-}
-
-struct Repo {
-    base: PathBuf,
-    current: PathBuf,
-    default_branch: String,
-}
-
-impl Repo {
-    fn discover(cwd: &Path) -> Result<Self, CliError> {
-        let root = PathBuf::from(git::output(cwd, &["rev-parse", "--show-toplevel"])?.trim());
-        let base = ops::worktrees(&root)?.into_iter().next().map(|w| w.path).ok_or("could not determine base worktree")?;
-        let default_branch = default_branch(&base)?;
-
-        Ok(Self { base, current: root, default_branch })
-    }
-
-    fn session_name(&self, name: &str) -> String {
-        ops::session_name_for(&self.base, name)
-    }
-}
-
-fn default_branch(repo: &Path) -> Result<String, CliError> {
-    git::default_branch(repo, "origin")
-}
-
-fn worktree_paths(repo: &Repo) -> Result<Vec<PathBuf>, CliError> {
-    Ok(ops::worktrees(&repo.base)?.into_iter().map(|worktree| worktree.path).collect())
 }
 
 fn required<'a>(args: &'a ArgMatches, name: &str) -> Result<&'a str, CliError> {
