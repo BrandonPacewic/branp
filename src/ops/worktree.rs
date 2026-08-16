@@ -17,6 +17,9 @@ use crate::ops::scratch_state::{self, Availability, Entry, Registered, State, St
 
 pub struct PathOptions<'a> {
     pub base: &'a Path,
+    pub current: &'a Path,
+    pub cwd: &'a Path,
+    pub home: &'a Path,
     pub default_branch: &'a str,
     pub name: &'a str,
 }
@@ -130,6 +133,15 @@ struct Worktree {
     branch: Option<String>,
 }
 
+struct WorktreeTargetOptions<'a> {
+    base: &'a Path,
+    current: &'a Path,
+    cwd: &'a Path,
+    home: &'a Path,
+    default_branch: &'a str,
+    target: &'a str,
+}
+
 struct ResolvedRemoveTarget {
     path: PathBuf,
     worktree: Worktree,
@@ -174,8 +186,9 @@ impl Repo {
 }
 
 pub fn path(gctx: &mut GlobalContext, options: &PathOptions<'_>) -> CliResult {
-    let path = if options.name == options.default_branch { options.base.to_path_buf() } else { target_dir(options.base, options.name) };
-    gctx.shell().note(path.display());
+    let registered = worktrees(options.base)?;
+    let target = resolve_path_target(options, &registered)?;
+    gctx.shell().note(target.display());
     Ok(())
 }
 
@@ -667,8 +680,36 @@ fn remove_input_matches(options: &RemoveOptions<'_>, input: &Path, registered: &
 }
 
 fn resolve_enter_target(options: &EnterOptions<'_>, registered: &[Worktree]) -> Result<PathBuf, CliError> {
+    resolve_worktree_target(
+        &WorktreeTargetOptions {
+            base: options.base,
+            current: options.current,
+            cwd: options.cwd,
+            home: options.home,
+            default_branch: options.default_branch,
+            target: options.target,
+        },
+        registered,
+    )
+}
+
+fn resolve_path_target(options: &PathOptions<'_>, registered: &[Worktree]) -> Result<PathBuf, CliError> {
+    resolve_worktree_target(
+        &WorktreeTargetOptions {
+            base: options.base,
+            current: options.current,
+            cwd: options.cwd,
+            home: options.home,
+            default_branch: options.default_branch,
+            target: options.name,
+        },
+        registered,
+    )
+}
+
+fn resolve_worktree_target(options: &WorktreeTargetOptions<'_>, registered: &[Worktree]) -> Result<PathBuf, CliError> {
     let input = Path::new(options.target);
-    let matches: Vec<_> = registered.iter().filter(|worktree| enter_input_matches(options, input, worktree)).collect();
+    let matches: Vec<_> = registered.iter().filter(|worktree| target_input_matches(options, input, worktree)).collect();
 
     if matches.len() > 1 {
         let paths = matches.iter().map(|worktree| worktree.path.display().to_string()).collect::<Vec<_>>().join(", ");
@@ -689,7 +730,7 @@ fn resolve_enter_target(options: &EnterOptions<'_>, registered: &[Worktree]) -> 
     Ok(worktree.path.clone())
 }
 
-fn enter_input_matches(options: &EnterOptions<'_>, input: &Path, worktree: &Worktree) -> bool {
+fn target_input_matches(options: &WorktreeTargetOptions<'_>, input: &Path, worktree: &Worktree) -> bool {
     let mut candidates = Vec::new();
     if input.is_absolute() {
         candidates.push(input.to_path_buf());
@@ -2513,6 +2554,40 @@ linked = ["z.env", "./a.env", "z.env"]
         let scratch_path = scratch.to_str().unwrap();
         let options = EnterOptions { target: scratch_path, ..options };
         assert_eq!(resolve_enter_target(&options, &registered).unwrap(), scratch);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn path_resolves_base_named_and_nested_scratch_targets() {
+        let root = std::env::temp_dir().join(format!("branp-path-targets-{}", std::process::id()));
+        let base = root.join("repo");
+        let named = root.join("repo-feature");
+        let home = root.join("nested/home");
+        let scratch = scratch_dir(&home).join("scratch-path");
+        fs::create_dir_all(&base).unwrap();
+        fs::create_dir_all(&named).unwrap();
+        fs::create_dir_all(&scratch).unwrap();
+
+        let registered = vec![
+            Worktree { path: base.clone(), head: Some("base".to_string()), branch: Some("mega".to_string()) },
+            Worktree { path: named.clone(), head: Some("named".to_string()), branch: Some("feature".to_string()) },
+            Worktree { path: scratch.clone(), head: Some("scratch".to_string()), branch: None },
+        ];
+        let mut options = PathOptions { base: &base, current: &base, cwd: &base, home: &home, default_branch: "mega", name: "mega" };
+
+        assert_eq!(resolve_path_target(&options, &registered).unwrap(), base);
+        options.name = "feature";
+        assert_eq!(resolve_path_target(&options, &registered).unwrap(), named);
+        options.name = "scratch-path";
+        assert_eq!(resolve_path_target(&options, &registered).unwrap(), scratch);
+
+        let named_path = named.to_str().unwrap();
+        options.name = named_path;
+        assert_eq!(resolve_path_target(&options, &registered).unwrap(), named);
+        let scratch_path = scratch.to_str().unwrap();
+        options.name = scratch_path;
+        assert_eq!(resolve_path_target(&options, &registered).unwrap(), scratch);
 
         fs::remove_dir_all(root).unwrap();
     }

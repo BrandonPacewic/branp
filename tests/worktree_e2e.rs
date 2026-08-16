@@ -125,6 +125,85 @@ fn worktree_enter_refuses_missing_unregistered_and_ambiguous_targets() {
     assert!(scratch.is_dir() && named.is_dir());
 }
 
+#[test]
+fn worktree_path_resolves_registered_names_and_paths_with_clean_output() {
+    let workspace = TestWorkspace::new("worktree-path-targets");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    repo.git(["branch", "feature"]);
+
+    let named = repo.sibling("feature");
+    repo.git(["worktree", "add", named.to_str().unwrap(), "feature"]);
+    let home = repo.sibling("nested/home");
+    let scratch = add_detached_scratch(&repo, &home, "scratch-path");
+    let state_path = home.join(".bp/worktrees/state.toml");
+    let state_before = fs::read_to_string(&state_path).unwrap();
+    let worktrees_before = stdout(&repo.git(["worktree", "list", "--porcelain"]));
+
+    let cases = [("mega", repo.path().to_path_buf()), ("feature", named.clone()), ("scratch-path", scratch.clone())];
+    for (target, expected) in cases {
+        let output = repo.bp_with_env(["worktree", "path", target], &[("HOME", home.to_str().unwrap())]);
+        assert_success(&output, "path by registered name");
+        assert_eq!(stdout(&output), format!("{}\n", fs::canonicalize(expected).unwrap().display()));
+        assert_eq!(stderr(&output), "");
+    }
+
+    for expected in [repo.path().to_path_buf(), named.clone(), scratch.clone()] {
+        let target = expected.to_str().unwrap();
+        let output = repo.bp_with_env(["worktree", "path", target], &[("HOME", home.to_str().unwrap())]);
+        assert_success(&output, "path by registered path");
+        assert_eq!(stdout(&output), format!("{}\n", fs::canonicalize(expected).unwrap().display()));
+        assert_eq!(stderr(&output), "");
+    }
+
+    assert_eq!(fs::read_to_string(&state_path).unwrap(), state_before);
+    assert_eq!(stdout(&repo.git(["worktree", "list", "--porcelain"])), worktrees_before);
+}
+
+#[test]
+fn worktree_path_refuses_unregistered_missing_and_colliding_targets() {
+    let workspace = TestWorkspace::new("worktree-path-refusals");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+
+    let home = repo.sibling("nested/home");
+    repo.git(["branch", "scratch-collision"]);
+    let scratch = add_detached_scratch(&repo, &home, "scratch-collision");
+    let named = repo.sibling("scratch-collision");
+    repo.git(["worktree", "add", named.to_str().unwrap(), "scratch-collision"]);
+
+    let missing = repo.sibling("missing");
+    repo.git(["worktree", "add", "--detach", missing.to_str().unwrap(), "HEAD"]);
+    fs::remove_dir_all(&missing).unwrap();
+    let unregistered = repo.sibling("unregistered");
+    fs::create_dir_all(&unregistered).unwrap();
+
+    let missing_name = repo.bp_with_env(["worktree", "path", "does-not-exist"], &[("HOME", home.to_str().unwrap())]);
+    assert!(!missing_name.status.success());
+    assert_eq!(stdout(&missing_name), "");
+    assert!(stderr(&missing_name).contains("not a registered worktree"), "missing name refusal was unclear:\n{}", stderr(&missing_name));
+
+    let unregistered_path = repo.bp_with_env(["worktree", "path", unregistered.to_str().unwrap()], &[("HOME", home.to_str().unwrap())]);
+    assert!(!unregistered_path.status.success());
+    assert_eq!(stdout(&unregistered_path), "");
+    assert!(
+        stderr(&unregistered_path).contains("not a registered worktree"),
+        "unregistered path refusal was unclear:\n{}",
+        stderr(&unregistered_path)
+    );
+
+    let missing_path = repo.bp_with_env(["worktree", "path", "missing"], &[("HOME", home.to_str().unwrap())]);
+    assert!(!missing_path.status.success());
+    assert_eq!(stdout(&missing_path), "");
+    assert!(stderr(&missing_path).contains("is missing"), "missing registered path refusal was unclear:\n{}", stderr(&missing_path));
+
+    let collision = repo.bp_with_env(["worktree", "path", "scratch-collision"], &[("HOME", home.to_str().unwrap())]);
+    assert!(!collision.status.success());
+    assert_eq!(stdout(&collision), "");
+    assert!(stderr(&collision).contains("ambiguous"), "name collision refusal was unclear:\n{}", stderr(&collision));
+    assert!(scratch.is_dir() && named.is_dir());
+}
+
 #[cfg(unix)]
 #[test]
 fn worktree_new_without_name_enters_each_detached_scratch_worktree() {

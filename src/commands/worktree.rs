@@ -67,9 +67,7 @@ fn list_cli() -> Command {
 }
 
 fn path_cli() -> Command {
-    Command::new("path")
-        .about("Print the path for a worktree name, or the base worktree for the default branch")
-        .arg(Arg::new("name").required(true).value_name("NAME"))
+    Command::new("path").about("Print the path for a registered worktree name or path").arg(Arg::new("name").required(true).value_name("NAME|PATH"))
 }
 
 fn enter_cli() -> Command {
@@ -206,7 +204,19 @@ fn list_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
 fn path_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let repo = ops::Repo::discover(gctx.cwd())?;
     let default_branch = repo.default_branch()?;
-    ops::path(gctx, &ops::PathOptions { base: &repo.base, default_branch: &default_branch, name: required(args, "name")? })
+    let cwd = gctx.cwd().clone();
+    let home = gctx.home().clone();
+    ops::path(
+        gctx,
+        &ops::PathOptions {
+            base: &repo.base,
+            current: &repo.current,
+            cwd: &cwd,
+            home: &home,
+            default_branch: &default_branch,
+            name: required(args, "name")?,
+        },
+    )
 }
 
 fn enter_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
