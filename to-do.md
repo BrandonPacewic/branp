@@ -61,10 +61,10 @@ The following tasks make those worktrees reusable and safely manageable.
 
 ### Persistent State and Recovery
 
-- [ ] Store scratch ownership, availability, and last-used metadata in a small locked state file.
-- [ ] Write state atomically so an interrupted lifecycle operation cannot make a worktree appear safely reusable.
-- [ ] Quarantine scratch worktrees when state is missing, corrupt, or cannot prove that reuse is safe.
-- [ ] Add a recovery path that lets a user inspect and explicitly release or destroy quarantined worktrees.
+- [x] Store scratch ownership, availability, and last-used metadata in a small locked state file.
+- [x] Write state atomically so an interrupted lifecycle operation cannot make a worktree appear safely reusable.
+- [x] Quarantine scratch worktrees when state is missing, corrupt, or cannot prove that reuse is safe.
+- [x] Add a recovery path that lets a user inspect and explicitly release or destroy quarantined worktrees.
 
 ## Suggested Implementation Order
 
