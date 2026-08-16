@@ -13,13 +13,27 @@ pub fn cli() -> Command {
 type WorktreeExec = fn(&mut GlobalContext, &ArgMatches) -> CliResult;
 
 fn builtin() -> Vec<Command> {
-    vec![list_cli(), path_cli(), new_cli(), return_cli(), remove_cli(), prune_cli(), recover_cli(), gone_cli(), track_cli(), links_cli(), sync_cli()]
+    vec![
+        list_cli(),
+        path_cli(),
+        enter_cli(),
+        new_cli(),
+        return_cli(),
+        remove_cli(),
+        prune_cli(),
+        recover_cli(),
+        gone_cli(),
+        track_cli(),
+        links_cli(),
+        sync_cli(),
+    ]
 }
 
 fn builtin_exec(cmd: &str) -> Option<WorktreeExec> {
     let exec = match cmd {
         "list" => list_exec,
         "path" => path_exec,
+        "enter" => enter_exec,
         "new" => new_exec,
         "return" => return_exec,
         "remove" => remove_exec,
@@ -56,6 +70,10 @@ fn path_cli() -> Command {
     Command::new("path")
         .about("Print the path for a worktree name, or the base worktree for the default branch")
         .arg(Arg::new("name").required(true).value_name("NAME"))
+}
+
+fn enter_cli() -> Command {
+    Command::new("enter").about("Open an existing worktree in the configured shell").arg(Arg::new("target").required(true).value_name("NAME|PATH"))
 }
 
 fn new_cli() -> Command {
@@ -189,6 +207,24 @@ fn path_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let repo = ops::Repo::discover(gctx.cwd())?;
     let default_branch = repo.default_branch()?;
     ops::path(gctx, &ops::PathOptions { base: &repo.base, default_branch: &default_branch, name: required(args, "name")? })
+}
+
+fn enter_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
+    let repo = ops::Repo::discover(gctx.cwd())?;
+    let default_branch = repo.default_branch()?;
+    let cwd = gctx.cwd().clone();
+    let home = gctx.home().clone();
+    ops::enter(
+        gctx,
+        &ops::EnterOptions {
+            base: &repo.base,
+            current: &repo.current,
+            cwd: &cwd,
+            home: &home,
+            default_branch: &default_branch,
+            target: required(args, "target")?,
+        },
+    )
 }
 
 fn new_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
@@ -375,6 +411,8 @@ mod tests {
     #[test]
     fn worktree_cli_definition_is_valid() {
         cli().debug_assert();
+        let help = cli().render_help().to_string();
+        assert!(help.contains("enter    Open an existing worktree in the configured shell"));
     }
 
     #[test]

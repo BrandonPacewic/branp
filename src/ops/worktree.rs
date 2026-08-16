@@ -21,6 +21,15 @@ pub struct PathOptions<'a> {
     pub name: &'a str,
 }
 
+pub struct EnterOptions<'a> {
+    pub base: &'a Path,
+    pub current: &'a Path,
+    pub cwd: &'a Path,
+    pub home: &'a Path,
+    pub default_branch: &'a str,
+    pub target: &'a str,
+}
+
 pub struct ListOptions<'a> {
     pub base: &'a Path,
     pub current: &'a Path,
@@ -168,6 +177,13 @@ pub fn path(gctx: &mut GlobalContext, options: &PathOptions<'_>) -> CliResult {
     let path = if options.name == options.default_branch { options.base.to_path_buf() } else { target_dir(options.base, options.name) };
     gctx.shell().note(path.display());
     Ok(())
+}
+
+pub fn enter(gctx: &mut GlobalContext, options: &EnterOptions<'_>) -> CliResult {
+    let registered = worktrees(options.base)?;
+    let target = resolve_enter_target(options, &registered)?;
+    gctx.shell().note(target.display());
+    enter_worktree_shell(&target)
 }
 
 pub fn prune(gctx: &mut GlobalContext, options: &PruneOptions<'_>) -> CliResult {
@@ -650,6 +666,61 @@ fn remove_input_matches(options: &RemoveOptions<'_>, input: &Path, registered: &
     candidates.into_iter().any(|candidate| same_worktree_path(&candidate, registered))
 }
 
+fn resolve_enter_target(options: &EnterOptions<'_>, registered: &[Worktree]) -> Result<PathBuf, CliError> {
+    let input = Path::new(options.target);
+    let matches: Vec<_> = registered.iter().filter(|worktree| enter_input_matches(options, input, worktree)).collect();
+
+    if matches.len() > 1 {
+        let paths = matches.iter().map(|worktree| worktree.path.display().to_string()).collect::<Vec<_>>().join(", ");
+        return Err(CliError::from(format!("ambiguous worktree target `{}`; matches: {paths}; use an exact path", options.target)));
+    }
+
+    let Some(worktree) = matches.into_iter().next() else {
+        return Err(CliError::from(format!(
+            "worktree target `{}` is not a registered worktree; use an exact registered worktree name or path",
+            options.target
+        )));
+    };
+
+    if !worktree.path.is_dir() {
+        return Err(CliError::from(format!("worktree target `{}` is missing: {}", options.target, worktree.path.display())));
+    }
+
+    Ok(worktree.path.clone())
+}
+
+fn enter_input_matches(options: &EnterOptions<'_>, input: &Path, worktree: &Worktree) -> bool {
+    let mut candidates = Vec::new();
+    if input.is_absolute() {
+        candidates.push(input.to_path_buf());
+    } else {
+        candidates.push(options.cwd.join(input));
+        candidates.push(options.current.join(input));
+    }
+
+    if input.components().count() == 1 {
+        let Some(name) = input.to_str() else {
+            return false;
+        };
+
+        if name == options.default_branch || worktree.branch.as_deref() == Some(name) {
+            candidates.push(options.base.to_path_buf());
+        }
+        candidates.push(target_dir(options.base, name));
+
+        let scratch_root = scratch_dir(options.home);
+        let scratch = scratch_root.join(name);
+        let is_scratch = worktree.branch.is_none()
+            && worktree.path.parent().is_some_and(|parent| same_worktree_path(parent, &scratch_root))
+            && scratch.file_name().and_then(|value| value.to_str()).is_some_and(|value| value.starts_with("scratch-"));
+        if is_scratch {
+            candidates.push(scratch);
+        }
+    }
+
+    candidates.into_iter().any(|candidate| same_worktree_path(&candidate, &worktree.path))
+}
+
 fn inspect_scratch_removal(path: &Path, session_name: &str) -> Result<ScratchRemoveInspection, CliError> {
     let mut in_use = crate::utils::in_use::inspect(path, Some(session_name))?;
     in_use.processes.retain(|process| process.pid != std::process::id());
@@ -802,7 +873,7 @@ fn setup_scratch(gctx: &mut GlobalContext, options: &ScratchOptions<'_>, target:
     }
 
     gctx.shell().note(target.display());
-    let shell_result = enter_scratch_shell(&target);
+    let shell_result = enter_worktree_shell(&target);
     let state_result = match &shell_result {
         Ok(()) => transition_scratch_state(gctx, options.home, options.base, &target, Availability::Available, None, None),
         Err(error) => transition_scratch_state(
@@ -2101,13 +2172,13 @@ fn reserve_scratch_target_in(root: &Path, prefix: &str) -> Result<PathBuf, CliEr
     Err(CliError::from("could not allocate a scratch worktree name"))
 }
 
-fn enter_scratch_shell(target: &Path) -> CliResult {
+fn enter_worktree_shell(target: &Path) -> CliResult {
     let shell = std::env::var_os("SHELL").or_else(|| std::env::var_os("COMSPEC")).unwrap_or_else(|| "sh".into());
     let status = std::process::Command::new(&shell).current_dir(target).status()?;
     if status.success() {
         Ok(())
     } else {
-        Err(CliError::from(format!("scratch shell exited unsuccessfully: {}", shell.to_string_lossy())))
+        Err(CliError::from(format!("worktree shell exited unsuccessfully: {}", shell.to_string_lossy())))
     }
 }
 
@@ -2414,6 +2485,72 @@ linked = ["z.env", "./a.env", "z.env"]
         assert_eq!(resolved.path, scratch);
 
         fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn enter_resolves_base_named_and_nested_scratch_targets() {
+        let root = std::env::temp_dir().join(format!("branp-enter-targets-{}", std::process::id()));
+        let base = root.join("repo");
+        let named = root.join("repo-feature");
+        let home = root.join("nested/home");
+        let scratch = scratch_dir(&home).join("scratch-enter");
+        fs::create_dir_all(&base).unwrap();
+        fs::create_dir_all(&named).unwrap();
+        fs::create_dir_all(&scratch).unwrap();
+
+        let registered = vec![
+            Worktree { path: base.clone(), head: Some("base".to_string()), branch: Some("mega".to_string()) },
+            Worktree { path: named.clone(), head: Some("named".to_string()), branch: Some("feature".to_string()) },
+            Worktree { path: scratch.clone(), head: Some("scratch".to_string()), branch: None },
+        ];
+        let options = EnterOptions { base: &base, current: &base, cwd: &base, home: &home, default_branch: "mega", target: "mega" };
+
+        assert_eq!(resolve_enter_target(&options, &registered).unwrap(), base);
+        let options = EnterOptions { target: "feature", ..options };
+        assert_eq!(resolve_enter_target(&options, &registered).unwrap(), named);
+        let options = EnterOptions { target: "scratch-enter", ..options };
+        assert_eq!(resolve_enter_target(&options, &registered).unwrap(), scratch);
+        let scratch_path = scratch.to_str().unwrap();
+        let options = EnterOptions { target: scratch_path, ..options };
+        assert_eq!(resolve_enter_target(&options, &registered).unwrap(), scratch);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn enter_refuses_ambiguous_unregistered_and_missing_targets() {
+        let root = std::env::temp_dir().join(format!("branp-enter-refusals-{}", std::process::id()));
+        let base = root.join("repo");
+        let named = root.join("repo-scratch-collision");
+        let home = root.join("nested/home");
+        let scratch = scratch_dir(&home).join("scratch-collision");
+        let missing = root.join("repo-missing");
+        fs::create_dir_all(&base).unwrap();
+        fs::create_dir_all(&named).unwrap();
+        fs::create_dir_all(&scratch).unwrap();
+
+        let registered = vec![
+            Worktree { path: base.clone(), head: Some("base".to_string()), branch: Some("mega".to_string()) },
+            Worktree { path: named.clone(), head: Some("named".to_string()), branch: Some("scratch-collision".to_string()) },
+            Worktree { path: scratch.clone(), head: Some("scratch".to_string()), branch: None },
+            Worktree { path: missing.clone(), head: Some("missing".to_string()), branch: Some("missing".to_string()) },
+        ];
+        let options = EnterOptions { base: &base, current: &base, cwd: &base, home: &home, default_branch: "mega", target: "scratch-collision" };
+        let error = resolve_enter_target(&options, &registered).unwrap_err();
+        assert!(error.message.contains("ambiguous"));
+        assert!(error.message.contains(&named.display().to_string()));
+        assert!(error.message.contains(&scratch.display().to_string()));
+
+        let options = EnterOptions { target: "does-not-exist", ..options };
+        let error = resolve_enter_target(&options, &registered).unwrap_err();
+        assert!(error.message.contains("not a registered worktree"));
+
+        let missing_path = missing.to_str().unwrap();
+        let options = EnterOptions { target: missing_path, ..options };
+        let error = resolve_enter_target(&options, &registered).unwrap_err();
+        assert!(error.message.contains("is missing"));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

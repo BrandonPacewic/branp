@@ -36,6 +36,97 @@ fn worktree_new_reuses_existing_local_branch_without_source_prompt() {
 
 #[cfg(unix)]
 #[test]
+fn worktree_enter_opens_exact_base_named_and_nested_scratch_targets_without_mutation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let workspace = TestWorkspace::new("worktree-enter-existing");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    repo.git(["branch", "feature"]);
+
+    let named = repo.sibling("feature");
+    repo.git(["worktree", "add", named.to_str().unwrap(), "feature"]);
+    fs::write(named.join("file.txt"), "named\n").unwrap();
+
+    let home = repo.sibling("nested/home");
+    let scratch = add_detached_scratch(&repo, &home, "scratch-enter");
+    fs::write(scratch.join("file.txt"), "scratch\n").unwrap();
+    let state_path = home.join(".bp/worktrees/state.toml");
+    let state_before = fs::read_to_string(&state_path).unwrap();
+
+    let shell = home.join("record-shell");
+    let shell_log = home.join("shell.log");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        &shell,
+        "#!/bin/sh\nprintf '%s|' \"$PWD\" >> \"$BP_TEST_SHELL_LOG\"\ngit branch --show-current | tr '\\n' '|' >> \"$BP_TEST_SHELL_LOG\"\ngit status --short | tr '\\n' ';' >> \"$BP_TEST_SHELL_LOG\"\nprintf '\\n' >> \"$BP_TEST_SHELL_LOG\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&shell, fs::Permissions::from_mode(0o755)).unwrap();
+
+    for target in ["mega", "feature", "scratch-enter"] {
+        let output = repo.bp_with_env(
+            ["worktree", "enter", target],
+            &[("HOME", home.to_str().unwrap()), ("SHELL", shell.to_str().unwrap()), ("BP_TEST_SHELL_LOG", shell_log.to_str().unwrap())],
+        );
+        assert_success(&output, "enter worktree by name");
+    }
+    for target in [named.to_str().unwrap(), scratch.to_str().unwrap()] {
+        let output = repo.bp_with_env(
+            ["worktree", "enter", target],
+            &[("HOME", home.to_str().unwrap()), ("SHELL", shell.to_str().unwrap()), ("BP_TEST_SHELL_LOG", shell_log.to_str().unwrap())],
+        );
+        assert_success(&output, "enter worktree by path");
+    }
+
+    let log = fs::read_to_string(&shell_log).unwrap();
+    assert!(log.lines().any(|line| line.contains("|mega|")), "shell did not enter the base worktree with its branch:\n{log}");
+    assert!(
+        log.lines().any(|line| line.contains("|feature| M file.txt;")),
+        "shell did not enter the named worktree with its files and branch:\n{log}"
+    );
+    assert!(log.lines().any(|line| line.contains("| M file.txt;")), "shell did not enter the detached scratch worktree with its files:\n{log}");
+    assert_eq!(fs::read_to_string(repo.path().join("file.txt")).unwrap(), "base\n");
+    assert_eq!(fs::read_to_string(named.join("file.txt")).unwrap(), "named\n");
+    assert_eq!(fs::read_to_string(scratch.join("file.txt")).unwrap(), "scratch\n");
+    assert_eq!(stdout(&GitRepo::from_path(&named).git(["branch", "--show-current"])), "feature\n");
+    assert_eq!(stdout(&GitRepo::from_path(&scratch).git(["branch", "--show-current"])), "");
+    assert_eq!(fs::read_to_string(state_path).unwrap(), state_before);
+}
+
+#[test]
+fn worktree_enter_refuses_missing_unregistered_and_ambiguous_targets() {
+    let workspace = TestWorkspace::new("worktree-enter-refusals");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    repo.git(["branch", "scratch-collision"]);
+    let home = repo.sibling("nested/home");
+    let scratch = add_detached_scratch(&repo, &home, "scratch-collision");
+    let named = repo.sibling("scratch-collision");
+    repo.git(["worktree", "add", named.to_str().unwrap(), "scratch-collision"]);
+
+    let missing = repo.bp(["worktree", "enter", "does-not-exist"]);
+    assert!(!missing.status.success());
+    assert!(stderr(&missing).contains("not a registered worktree"), "missing target refusal was unclear:\n{}", stderr(&missing));
+
+    let unregistered = repo.sibling("unregistered");
+    fs::create_dir_all(&unregistered).unwrap();
+    let unregistered_output = repo.bp(["worktree", "enter", unregistered.to_str().unwrap()]);
+    assert!(!unregistered_output.status.success());
+    assert!(
+        stderr(&unregistered_output).contains("not a registered worktree"),
+        "unregistered target refusal was unclear:\n{}",
+        stderr(&unregistered_output)
+    );
+
+    let ambiguous = repo.bp_with_env(["worktree", "enter", "scratch-collision"], &[("HOME", home.to_str().unwrap())]);
+    assert!(!ambiguous.status.success());
+    assert!(stderr(&ambiguous).contains("ambiguous"), "ambiguous target refusal was unclear:\n{}", stderr(&ambiguous));
+    assert!(scratch.is_dir() && named.is_dir());
+}
+
+#[cfg(unix)]
+#[test]
 fn worktree_new_without_name_enters_each_detached_scratch_worktree() {
     use std::os::unix::fs::PermissionsExt;
 
