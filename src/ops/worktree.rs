@@ -1607,43 +1607,36 @@ impl WorktreeRow {
         }
     }
 
-    fn format(
-        &self,
-        path_width: usize,
-        branch_width: usize,
-        head_width: usize,
-        badge_widths: [usize; 6],
-        pr: DynamicBadge,
-        spinner: Option<char>,
-    ) -> String {
-        let path = crate::utils::table::pad_cell(&self.path, path_width);
+    fn format(&self, layout: WorktreeLayout, pr: DynamicBadge, spinner: Option<char>) -> String {
+        let path = crate::utils::table::fit_cell(&self.path, layout.path_width);
         let path = match self.is_dirty() {
             Some(true) => color_print::cformat!("<yellow,bold>{path}</>"),
             _ if self.base => color_print::cformat!("<green,bold>{path}</>"),
             _ => color_print::cformat!("<cyan>{path}</>"),
         };
 
-        let branch = crate::utils::table::pad_cell(&self.branch, branch_width);
+        let branch = crate::utils::table::fit_cell(&self.branch, layout.branch_width);
         let branch = color_print::cformat!("<blue>{branch}</>");
 
-        let head = crate::utils::table::pad_cell(&self.head, head_width);
+        let head = crate::utils::table::fit_cell(&self.head, layout.head_width);
         let head = color_print::cformat!("<black!>{head}</>");
 
         let badges = self.badges(pr, spinner);
         let badge_cells = [
-            color_badge(&badges.state, badge_widths[0], badges.state_color),
-            color_badge(&badges.untracked, badge_widths[1], BadgeColor::MagentaBold),
+            color_badge(&badges.state, layout.badge_widths[0], badges.state_color),
+            color_badge(&badges.untracked, layout.badge_widths[1], BadgeColor::MagentaBold),
             if self.remote_gone == Some(true) {
-                color_badge(&badges.remote, badge_widths[2], BadgeColor::RedBold)
+                color_badge(&badges.remote, layout.badge_widths[2], BadgeColor::RedBold)
             } else {
-                color_badge(&badges.remote, badge_widths[2], BadgeColor::Green)
+                color_badge(&badges.remote, layout.badge_widths[2], BadgeColor::Green)
             },
-            color_badge_link(&badges.pr.text, badge_widths[3], BadgeColor::Magenta, badges.pr.url.as_deref()),
-            color_badge(&badges.submodules, badge_widths[4], BadgeColor::Yellow),
-            color_badge(&badges.tmux, badge_widths[5], BadgeColor::Cyan),
+            color_badge_link(&badges.pr.text, layout.badge_widths[3], BadgeColor::Magenta, badges.pr.url.as_deref()),
+            color_badge(&badges.submodules, layout.badge_widths[4], BadgeColor::Yellow),
+            color_badge(&badges.tmux, layout.badge_widths[5], BadgeColor::Cyan),
         ];
 
-        format!("{path}  {branch}  {head}  {}", badge_cells.join("  "))
+        let separator = " ".repeat(layout.separator_width);
+        format!("{path}{separator}{branch}{separator}{head}{separator}{}", badge_cells.join(&separator))
     }
 
     fn pr_badge(&self, pr_render: &PrRender<'_>) -> DynamicBadge {
@@ -1667,6 +1660,15 @@ impl WorktreeRow {
     fn can_have_pr(&self) -> bool {
         !self.base && self.branch != "detached"
     }
+}
+
+#[derive(Clone, Copy)]
+struct WorktreeLayout {
+    path_width: usize,
+    branch_width: usize,
+    head_width: usize,
+    badge_widths: [usize; 6],
+    separator_width: usize,
 }
 
 /// Machine-readable `bp worktree list --json` schema.
@@ -1775,7 +1777,14 @@ struct WorktreeBadges {
 
 impl WorktreeBadges {
     fn widths(&self) -> [usize; 6] {
-        [self.state.len(), self.untracked.len(), self.remote.len(), self.pr.text.len(), self.submodules.len(), self.tmux.len()]
+        [
+            crate::utils::table::display_width(&self.state),
+            crate::utils::table::display_width(&self.untracked),
+            crate::utils::table::display_width(&self.remote),
+            crate::utils::table::display_width(&self.pr.text),
+            crate::utils::table::display_width(&self.submodules),
+            crate::utils::table::display_width(&self.tmux),
+        ]
     }
 }
 
@@ -1857,6 +1866,10 @@ fn pr_render_state<'a>(pr_lookup: bool, prs: Option<&'a [crate::utils::gh::PullR
 }
 
 fn render_worktree_rows(rows: &[WorktreeRow], pr_render: PrRender<'_>, spinner: Option<char>) -> Vec<String> {
+    render_worktree_rows_bounded(rows, pr_render, spinner, crate::utils::terminal::display_width())
+}
+
+fn render_worktree_rows_bounded(rows: &[WorktreeRow], pr_render: PrRender<'_>, spinner: Option<char>, display_width: usize) -> Vec<String> {
     let pr_badges: Vec<_> = rows.iter().map(|row| row.pr_badge(&pr_render)).collect();
     let [path_width, branch_width, head_width] =
         crate::utils::table::column_widths(rows.iter().map(|row| [row.path.as_str(), row.branch.as_str(), row.head.as_str()]));
@@ -1869,7 +1882,72 @@ fn render_worktree_rows(rows: &[WorktreeRow], pr_render: PrRender<'_>, spinner: 
         }
     }
 
-    rows.iter().zip(pr_badges).map(|(row, pr)| row.format(path_width, branch_width, head_width, badge_widths, pr, spinner)).collect()
+    let natural_widths =
+        [path_width, branch_width, head_width, badge_widths[0], badge_widths[1], badge_widths[2], badge_widths[3], badge_widths[4], badge_widths[5]];
+    let (widths, separator_width) = bounded_column_widths(natural_widths, display_width);
+    let [path_width, branch_width, head_width, state_width, untracked_width, remote_width, pr_width, submodules_width, tmux_width] = widths;
+    let layout = WorktreeLayout {
+        path_width,
+        branch_width,
+        head_width,
+        badge_widths: [state_width, untracked_width, remote_width, pr_width, submodules_width, tmux_width],
+        separator_width,
+    };
+
+    rows.iter().zip(pr_badges).map(|(row, pr)| row.format(layout, pr, spinner)).collect()
+}
+
+fn bounded_column_widths(natural: [usize; 9], display_width: usize) -> ([usize; 9], usize) {
+    const MINIMUMS: [usize; 9] = [12, 8, 7, 38, 0, 0, 0, 0, 0];
+    const COLUMN_COUNT: usize = 9;
+
+    let minimum_sum: usize = MINIMUMS.iter().sum();
+    let separator_width = if display_width >= minimum_sum + (COLUMN_COUNT - 1) * 2 {
+        2
+    } else if display_width >= minimum_sum + COLUMN_COUNT - 1 {
+        1
+    } else {
+        0
+    };
+    let available = display_width.saturating_sub((COLUMN_COUNT - 1) * separator_width);
+    let mut widths = natural;
+    let mut minimums = MINIMUMS;
+
+    if available < minimum_sum {
+        let mut remaining = minimum_sum - available;
+        for minimum in minimums.iter_mut().rev() {
+            let reduction = (*minimum).min(remaining);
+            *minimum -= reduction;
+            remaining -= reduction;
+        }
+    }
+
+    let mut total: usize = widths.iter().sum();
+    for index in [3, 4, 5, 6, 7, 8, 0, 1, 2] {
+        let target = natural[index].min(minimums[index]);
+        let reduction = widths[index].saturating_sub(target).min(total.saturating_sub(available));
+        widths[index] -= reduction;
+        total -= reduction;
+    }
+
+    for index in [3, 0, 1, 2, 4, 5, 6, 7, 8] {
+        let addition = natural[index].saturating_sub(widths[index]).min(available.saturating_sub(total));
+        widths[index] += addition;
+        total += addition;
+    }
+
+    if total > available {
+        for width in &mut widths {
+            let reduction = (*width).min(total - available);
+            *width -= reduction;
+            total -= reduction;
+            if total == available {
+                break;
+            }
+        }
+    }
+
+    (widths, separator_width)
 }
 
 fn loading_badge(label: &str, spinner: Option<char>) -> String {
@@ -1921,12 +1999,14 @@ fn color_badge(value: &str, width: usize, color: BadgeColor) -> String {
 }
 
 fn color_badge_link(value: &str, width: usize, color: BadgeColor, url: Option<&str>) -> String {
+    let value = crate::utils::table::truncate_cell(value, width);
     if value.is_empty() {
-        return crate::utils::table::pad_cell(value, width);
+        return crate::utils::table::pad_cell(&value, width);
     }
 
-    let padding = " ".repeat(width.saturating_sub(value.len()));
-    let value = if let Some(url) = url { format!("{}{padding}", crate::utils::terminal::hyperlink(value, url)) } else { format!("{value}{padding}") };
+    let padding = " ".repeat(width.saturating_sub(crate::utils::table::display_width(&value)));
+    let value =
+        if let Some(url) = url { format!("{}{padding}", crate::utils::terminal::hyperlink(&value, url)) } else { format!("{value}{padding}") };
 
     match color {
         BadgeColor::Green => color_print::cformat!("<green>{value}</>"),
@@ -2728,6 +2808,23 @@ fn name_from_worktree_path(base: &Path, path: &Path) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn strip_ansi(value: &str) -> String {
+        let mut visible = String::new();
+        let mut escape = false;
+        for character in value.chars() {
+            if escape {
+                if character.is_ascii_alphabetic() || character == '\\' {
+                    escape = false;
+                }
+            } else if character == '\x1b' {
+                escape = true;
+            } else {
+                visible.push(character);
+            }
+        }
+        visible
+    }
+
     #[test]
     fn normalizes_link_paths_inside_repo() {
         assert_eq!(normalize_link_path("./.env").unwrap(), PathBuf::from(".env"));
@@ -2859,6 +2956,51 @@ linked = ["z.env", "./a.env", "z.env"]
         };
 
         assert_eq!(in_use_badge(&inspection, true), "in-use (process:42 (shell), tmux:repo-feature)");
+    }
+
+    #[test]
+    fn bounded_columns_fit_the_selected_width_and_retain_readable_minimums() {
+        let (widths, separator_width) = bounded_column_widths([60, 20, 7, 100, 8, 9, 0, 0, 0], 80);
+
+        assert_eq!(separator_width, 1);
+        assert!(widths.iter().sum::<usize>() + separator_width * 8 <= 80);
+        assert!(widths[0] >= 12);
+        assert!(widths[1] >= 8);
+        assert!(widths[2] >= 7);
+        assert!(widths[3] >= 38);
+    }
+
+    #[test]
+    fn bounded_human_rendering_truncates_verbose_reasons_without_broken_styling() {
+        let worktree = Worktree {
+            path: PathBuf::from("/tmp/repo-feature-with-a-very-long-name"),
+            head: Some("0123456789abcdef".to_string()),
+            branch: Some("feature-with-a-long-name".to_string()),
+        };
+        let mut row = WorktreeRow::from_worktree(
+            Path::new("/tmp/repo"),
+            Path::new("/tmp/repo"),
+            Path::new("/tmp/home"),
+            None,
+            &worktree,
+            Path::new("/tmp"),
+            true,
+        );
+        row.apply_status(StatusSummary::default());
+        row.in_use = Some(crate::utils::in_use::InUseInspection {
+            processes: vec![crate::utils::process::ProcessInfo {
+                pid: 42,
+                name: "a-process-with-a-long-name".to_string(),
+                command: "a-process-with-a-long-name".to_string(),
+            }],
+            active_sessions: vec!["a-tmux-session-with-a-long-name".to_string()],
+        });
+
+        let line = render_worktree_rows_bounded(&[row], PrRender::Disabled, None, 40).remove(0);
+        let visible = strip_ansi(&line);
+        assert!(crate::utils::table::display_width(&visible) <= 40);
+        assert!(visible.contains('…'));
+        assert!(line.ends_with("\x1b[39m\x1b[22m") || line.ends_with("\x1b[39m"));
     }
 
     #[test]

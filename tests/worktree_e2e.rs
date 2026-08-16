@@ -616,6 +616,89 @@ fn worktree_list_reports_process_use_without_matching_a_sibling_worktree() {
     child.wait().expect("reap process in worktree");
 }
 
+#[cfg(unix)]
+#[test]
+fn worktree_list_bounds_default_and_verbose_pipe_output_without_changing_json() {
+    fn strip_ansi(value: &str) -> String {
+        let mut visible = String::new();
+        let mut escape = false;
+        for character in value.chars() {
+            if escape {
+                if character.is_ascii_alphabetic() || character == '\\' {
+                    escape = false;
+                }
+            } else if character == '\x1b' {
+                escape = true;
+            } else {
+                visible.push(character);
+            }
+        }
+        visible
+    }
+
+    let workspace = TestWorkspace::new("worktree-list-bounded-width");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    let branch = "feature-with-a-path-and-branch-name-long-enough-to-truncate";
+    repo.git(["branch", branch]);
+    let named = repo.sibling(branch);
+    repo.git(["worktree", "add", named.to_str().unwrap(), branch]);
+
+    let mut child = Command::new("sleep")
+        .arg("30")
+        .current_dir(&named)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start process in long worktree");
+    let pid = child.id().to_string();
+    let envs = [("COLUMNS", "80")];
+
+    let output = (0..80).find_map(|_| {
+        let output = repo.bp_with_env(["worktree", "list", "--no-pr"], &envs);
+        if stdout(&output).contains("in-use (") {
+            Some(output)
+        } else {
+            thread::sleep(Duration::from_millis(25));
+            None
+        }
+    });
+    let Some(output) = output else {
+        child.kill().expect("stop process after width detection timeout");
+        child.wait().expect("reap process after width detection timeout");
+        panic!("bounded worktree list did not report process {pid}");
+    };
+    assert_success(&output, "bounded default worktree list");
+    let default_text = stdout(&output);
+    assert!(default_text.contains('…'), "default output did not make truncation visible:\n{default_text}");
+    for line in default_text.lines() {
+        assert!(unicode_width::UnicodeWidthStr::width(strip_ansi(line).as_str()) <= 80, "default line exceeded COLUMNS=80:\n{default_text}");
+    }
+
+    let verbose = repo.bp_with_env(["worktree", "list", "--no-pr", "--verbose"], &envs);
+    assert_success(&verbose, "bounded verbose worktree list");
+    let verbose_text = stdout(&verbose);
+    assert!(verbose_text.contains('…'), "verbose output did not make truncation visible:\n{verbose_text}");
+    for line in verbose_text.lines() {
+        assert!(unicode_width::UnicodeWidthStr::width(strip_ansi(line).as_str()) <= 80, "verbose line exceeded COLUMNS=80:\n{verbose_text}");
+    }
+
+    let json = repo.bp_with_env(["worktree", "list", "--json", "--no-pr"], &envs);
+    assert_success(&json, "bounded worktree list JSON");
+    let document: serde_json::Value = serde_json::from_str(&stdout(&json)).expect("bounded worktree JSON was invalid");
+    let named_json = document["worktrees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["path"].as_str().unwrap().ends_with(branch))
+        .expect("long named worktree JSON row");
+    assert_eq!(named_json["in_use_reasons"], serde_json::json!([format!("process:{pid} (sleep)")]));
+
+    child.kill().expect("stop process after width checks");
+    child.wait().expect("reap process after width checks");
+}
+
 #[test]
 fn worktree_prune_does_not_require_default_branch_discovery() {
     let workspace = TestWorkspace::new("worktree-prune-detached-without-default");
