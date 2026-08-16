@@ -818,6 +818,86 @@ fn worktree_list_reports_base_named_and_detached_worktrees_with_state() {
     assert!(scratch_line.contains("clean"), "scratch row did not report clean state:\n{text}");
 }
 
+#[test]
+fn worktree_list_json_is_valid_sorted_and_keeps_human_output_separate() {
+    let workspace = TestWorkspace::new("worktree-list-json");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    repo.git(["branch", "feature"]);
+
+    let named_path = repo.sibling("feature");
+    repo.git(["worktree", "add", named_path.to_str().unwrap(), "feature"]);
+    fs::write(named_path.join("file.txt"), "dirty\n").unwrap();
+
+    let home = repo.sibling("home");
+    let scratch_path = add_detached_scratch(&repo, &home, "scratch-json");
+    let output = GitRepo::from_path(&named_path).bp_with_env(["worktree", "list", "--json", "--no-pr"], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&output, "bp worktree list --json");
+    assert!(stderr(&output).is_empty(), "valid JSON listing emitted unexpected diagnostics:\n{}", stderr(&output));
+
+    let document: serde_json::Value = serde_json::from_str(&stdout(&output)).expect("machine-readable output was not valid JSON");
+    assert_eq!(document["schema_version"], 1);
+    let rows = document["worktrees"].as_array().expect("worktrees was not an array");
+    assert_eq!(rows.len(), 3);
+
+    let paths = rows.iter().map(|row| row["path"].as_str().unwrap()).collect::<Vec<_>>();
+    let mut sorted_paths = paths.clone();
+    sorted_paths.sort_unstable();
+    assert_eq!(paths, sorted_paths, "machine-readable rows were not sorted by absolute path");
+
+    let base = rows.iter().find(|row| row["kind"] == "base").expect("base row");
+    assert_eq!(base["branch"], "mega");
+    assert_eq!(base["detached"], false);
+    assert_eq!(base["base"], true);
+    assert_eq!(base["current"], false);
+    assert_eq!(base["clean"], true);
+    assert_eq!(base["dirty"], false);
+
+    let named = rows.iter().find(|row| row["kind"] == "named").expect("named row");
+    assert_eq!(named["branch"], "feature");
+    assert_eq!(named["current"], true);
+    assert_eq!(named["dirty"], true);
+    assert_eq!(named["clean"], false);
+    assert_eq!(named["reusable"], false);
+    assert_eq!(named["remote"], "prunable");
+
+    let scratch_path = fs::canonicalize(scratch_path).unwrap();
+    let scratch = rows.iter().find(|row| row["path"] == scratch_path.to_str().unwrap()).unwrap_or_else(|| panic!("scratch row: {document}"));
+    assert_eq!(scratch["kind"], "scratch");
+    assert_eq!(scratch["branch"], serde_json::Value::Null);
+    assert_eq!(scratch["detached"], true);
+    assert_eq!(scratch["available"], true);
+    assert_eq!(scratch["reusable"], true);
+    assert_eq!(scratch["unverified"], false);
+    assert_eq!(scratch["pull_request"], serde_json::Value::Null);
+
+    let first_key_order = [
+        "path",
+        "kind",
+        "branch",
+        "detached",
+        "head",
+        "clean",
+        "dirty",
+        "base",
+        "current",
+        "scratch",
+        "available",
+        "reusable",
+        "in_use",
+        "in_use_reasons",
+        "leased",
+        "unverified",
+        "remote",
+        "pull_request",
+    ];
+    let first_object = stdout(&output).lines().skip(4).take(18).collect::<Vec<_>>().join("\n");
+    let key_positions = first_key_order.iter().map(|key| first_object.find(&format!("\"{key}\":")).unwrap()).collect::<Vec<_>>();
+    let mut sorted_positions = key_positions.clone();
+    sorted_positions.sort_unstable();
+    assert_eq!(key_positions, sorted_positions, "machine-readable fields changed order");
+}
+
 #[cfg(unix)]
 #[test]
 fn worktree_list_reports_orthogonal_scratch_lifecycle_facts() {
@@ -882,6 +962,28 @@ fn worktree_list_reports_orthogonal_scratch_lifecycle_facts() {
         leased_line.contains("detached") && leased_line.contains("leased") && leased_line.contains("in-use:"),
         "leased row omitted facts:\n{text}"
     );
+
+    let json_output = repo.bp_with_env(["worktree", "list", "--json", "--no-pr"], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&json_output, "list scratch lifecycle facts as JSON");
+    assert!(stderr(&json_output).is_empty(), "JSON lifecycle listing emitted unexpected diagnostics:\n{}", stderr(&json_output));
+    let document: serde_json::Value = serde_json::from_str(&stdout(&json_output)).expect("JSON lifecycle listing was invalid");
+    let rows = document["worktrees"].as_array().unwrap();
+    let clean_path = fs::canonicalize(&clean).unwrap();
+    let clean_row = rows.iter().find(|row| row["path"] == clean_path.to_str().unwrap()).unwrap();
+    assert_eq!(clean_row["available"], true);
+    assert_eq!(clean_row["reusable"], true);
+    assert_eq!(clean_row["dirty"], false);
+    assert_eq!(clean_row["leased"], false);
+    let dirty_path = fs::canonicalize(&dirty).unwrap();
+    let dirty_row = rows.iter().find(|row| row["path"] == dirty_path.to_str().unwrap()).unwrap();
+    assert_eq!(dirty_row["available"], true);
+    assert_eq!(dirty_row["reusable"], false);
+    assert_eq!(dirty_row["dirty"], true);
+    let leased_row = rows.iter().find(|row| row["leased"] == true).unwrap();
+    assert_eq!(leased_row["available"], false);
+    assert_eq!(leased_row["reusable"], false);
+    assert_eq!(leased_row["in_use"], true);
+    assert!(!leased_row["in_use_reasons"].as_array().unwrap().is_empty());
 
     leased.kill().unwrap();
     leased.wait().unwrap();
@@ -969,6 +1071,15 @@ fn missing_or_corrupt_scratch_state_quarantines_existing_worktrees() {
         missing_line.contains("detached") && missing_line.contains("unverified"),
         "missing state was not rendered unverified:\n{missing_list_text}"
     );
+    let missing_json = repo.bp_with_env(["worktree", "list", "--json", "--no-pr"], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&missing_json, "list missing-state scratch as JSON");
+    assert!(stderr(&missing_json).is_empty(), "reconciled missing state emitted unexpected diagnostics:\n{}", stderr(&missing_json));
+    let missing_document: serde_json::Value = serde_json::from_str(&stdout(&missing_json)).expect("missing-state JSON was invalid");
+    let missing_path = fs::canonicalize(&missing).unwrap();
+    let missing_row = missing_document["worktrees"].as_array().unwrap().iter().find(|row| row["path"] == missing_path.to_str().unwrap()).unwrap();
+    assert_eq!(missing_row["available"], false);
+    assert_eq!(missing_row["reusable"], false);
+    assert_eq!(missing_row["unverified"], true);
     let released = repo.bp_with_env(["worktree", "recover", "release", missing.to_str().unwrap()], &[("HOME", home.to_str().unwrap())]);
     assert_success(&released, "release missing-state scratch");
 
@@ -977,6 +1088,16 @@ fn missing_or_corrupt_scratch_state_quarantines_existing_worktrees() {
     assert_success(&corrupt_output, "new scratch with corrupt state");
     let corrupt_text = format!("{}{}", stdout(&corrupt_output), stderr(&corrupt_output));
     assert!(corrupt_text.contains("state is corrupt") && corrupt_text.contains("quarantined"), "corrupt state lacked diagnostics:\n{corrupt_text}");
+    fs::write(&state_path, "version = 999\n").unwrap();
+    let corrupt_json = repo.bp_with_env(["worktree", "list", "--json", "--no-pr"], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&corrupt_json, "list corrupt-state scratch as JSON");
+    assert!(stderr(&corrupt_json).contains("state is corrupt"), "corrupt-state diagnostic was not separated onto stderr:\n{}", stderr(&corrupt_json));
+    let corrupt_document: serde_json::Value = serde_json::from_str(&stdout(&corrupt_json)).expect("corrupt-state JSON was invalid");
+    let corrupt_json_row =
+        corrupt_document["worktrees"].as_array().unwrap().iter().find(|row| row["path"] == missing_path.to_str().unwrap()).unwrap();
+    assert_eq!(corrupt_json_row["available"], false);
+    assert_eq!(corrupt_json_row["reusable"], false);
+    assert_eq!(corrupt_json_row["unverified"], true);
     let corrupt_list = repo.bp_with_env(["worktree", "list", "--no-pr"], &[("HOME", home.to_str().unwrap())]);
     assert_success(&corrupt_list, "list corrupt-state scratch");
     let corrupt_list_text = stdout(&corrupt_list);

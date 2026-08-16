@@ -39,6 +39,7 @@ pub struct ListOptions<'a> {
     pub home: &'a Path,
     pub default_branch: &'a str,
     pub pr_lookup: bool,
+    pub json: bool,
 }
 
 pub struct PruneOptions<'a> {
@@ -439,7 +440,7 @@ pub fn prune(gctx: &mut GlobalContext, options: &PruneOptions<'_>) -> CliResult 
 }
 
 pub fn list(gctx: &mut GlobalContext, options: &ListOptions<'_>) -> CliResult {
-    if gctx.shell().is_quiet() {
+    if !options.json && gctx.shell().is_quiet() {
         return Ok(());
     }
 
@@ -448,6 +449,13 @@ pub fn list(gctx: &mut GlobalContext, options: &ListOptions<'_>) -> CliResult {
     let durable_state = list_durable_state(gctx, options.home, options.base, &worktrees)?;
     let context = WorktreeListContext { base: options.base, current: options.current, home: options.home, durable_state: durable_state.as_ref() };
     let verbose = gctx.is_verbose();
+
+    if options.json {
+        let rows = resolve_worktree_rows(&context, options.default_branch, &worktrees, &path_root, verbose)?;
+        let pull_requests = if options.pr_lookup { Some(crate::utils::gh::open_pull_requests(options.base).unwrap_or_default()) } else { None };
+        return write_worktree_json(&rows, pull_requests.as_deref());
+    }
+
     if !crate::utils::terminal::supports_dynamic_lines() {
         let rows = resolve_worktree_rows(&context, options.default_branch, &worktrees, &path_root, verbose)?;
         let pr_numbers = if options.pr_lookup { crate::utils::gh::open_pull_requests(options.base).unwrap_or_default() } else { Vec::new() };
@@ -1446,6 +1454,7 @@ struct WorktreeRow {
     path: String,
     branch: String,
     head: String,
+    full_head: Option<String>,
     source_path: PathBuf,
     source_base: PathBuf,
     base: bool,
@@ -1480,6 +1489,7 @@ impl WorktreeRow {
             path: display_path(&worktree.path, path_root),
             branch: branch.to_string(),
             head: worktree.head.as_deref().and_then(|head| head.get(..7)).unwrap_or("").to_string(),
+            full_head: worktree.head.clone(),
             source_path: worktree.path.clone(),
             source_base: base.to_path_buf(),
             base: same_worktree_path(&worktree.path, base),
@@ -1655,6 +1665,100 @@ impl WorktreeRow {
 
     fn can_have_pr(&self) -> bool {
         !self.base && self.branch != "detached"
+    }
+}
+
+/// Machine-readable `bp worktree list --json` schema.
+///
+/// The top-level and row field order is part of the stable schema. Worktree
+/// rows are sorted by their absolute path before serialization. Nullable
+/// remote and pull-request fields are present even when the corresponding
+/// information is unavailable or was disabled with `--no-pr`.
+#[derive(serde::Serialize)]
+struct JsonWorktreeList {
+    schema_version: u32,
+    worktrees: Vec<JsonWorktree>,
+}
+
+#[derive(serde::Serialize)]
+struct JsonWorktree {
+    path: String,
+    kind: &'static str,
+    branch: Option<String>,
+    detached: bool,
+    head: Option<String>,
+    clean: bool,
+    dirty: bool,
+    base: bool,
+    current: bool,
+    scratch: bool,
+    available: bool,
+    reusable: bool,
+    in_use: bool,
+    in_use_reasons: Vec<String>,
+    leased: bool,
+    unverified: bool,
+    remote: Option<&'static str>,
+    pull_request: Option<JsonPullRequest>,
+}
+
+#[derive(serde::Serialize)]
+struct JsonPullRequest {
+    number: u64,
+    url: String,
+}
+
+fn write_worktree_json(rows: &[WorktreeRow], pull_requests: Option<&[crate::utils::gh::PullRequest]>) -> CliResult {
+    let mut worktrees = rows.iter().map(|row| JsonWorktree::from_row(row, pull_requests)).collect::<Vec<_>>();
+    worktrees.sort_by(|left, right| left.path.cmp(&right.path));
+
+    let document = JsonWorktreeList { schema_version: 1, worktrees };
+    let json = serde_json::to_vec_pretty(&document).map_err(|error| CliError::from(format!("failed to serialize worktree status: {error}")))?;
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(&json)?;
+    stdout.write_all(b"\n")?;
+    stdout.flush()?;
+    Ok(())
+}
+
+impl JsonWorktree {
+    fn from_row(row: &WorktreeRow, pull_requests: Option<&[crate::utils::gh::PullRequest]>) -> Self {
+        let lifecycle = row.lifecycle_state();
+        let pull_request = pull_requests
+            .and_then(|pull_requests| pull_requests.iter().find(|pull_request| pull_request.head == row.branch))
+            .map(|pull_request| JsonPullRequest { number: pull_request.number, url: pull_request.url.clone() });
+        let remote = match (row.remote_gone, row.remote_exists) {
+            (Some(true), _) => Some("prunable"),
+            (_, Some(true)) => Some("ok"),
+            _ => None,
+        };
+
+        Self {
+            path: row.source_path.display().to_string(),
+            kind: if lifecycle.base {
+                "base"
+            } else if row.scratch {
+                "scratch"
+            } else {
+                "named"
+            },
+            branch: (!lifecycle.detached).then(|| row.branch.clone()),
+            detached: lifecycle.detached,
+            head: row.full_head.clone(),
+            clean: !lifecycle.dirty,
+            dirty: lifecycle.dirty,
+            base: lifecycle.base,
+            current: lifecycle.current,
+            scratch: row.scratch,
+            available: lifecycle.available,
+            reusable: lifecycle.available && lifecycle.detached && !lifecycle.dirty && !lifecycle.in_use && !lifecycle.unverified,
+            in_use: lifecycle.in_use,
+            in_use_reasons: lifecycle.in_use_reasons,
+            leased: lifecycle.leased,
+            unverified: lifecycle.unverified,
+            remote,
+            pull_request,
+        }
     }
 }
 
@@ -2708,6 +2812,59 @@ linked = ["z.env", "./a.env", "z.env"]
             assert!(!state.available);
             assert!(!state.leased);
         }
+    }
+
+    #[test]
+    fn json_worktree_schema_is_valid_and_keeps_declared_field_order() {
+        let row = JsonWorktree {
+            path: "/tmp/repo".to_string(),
+            kind: "base",
+            branch: Some("mega".to_string()),
+            detached: false,
+            head: Some("0123456789abcdef".to_string()),
+            clean: true,
+            dirty: false,
+            base: true,
+            current: true,
+            scratch: false,
+            available: false,
+            reusable: false,
+            in_use: false,
+            in_use_reasons: Vec::new(),
+            leased: false,
+            unverified: false,
+            remote: Some("ok"),
+            pull_request: Some(JsonPullRequest { number: 7, url: "https://example.test/pull/7".to_string() }),
+        };
+        let json = serde_json::to_string(&JsonWorktreeList { schema_version: 1, worktrees: vec![row] }).unwrap();
+        let document: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(document["schema_version"], 1);
+        assert_eq!(document["worktrees"][0]["unverified"], false);
+
+        let fields = [
+            "path",
+            "kind",
+            "branch",
+            "detached",
+            "head",
+            "clean",
+            "dirty",
+            "base",
+            "current",
+            "scratch",
+            "available",
+            "reusable",
+            "in_use",
+            "in_use_reasons",
+            "leased",
+            "unverified",
+            "remote",
+            "pull_request",
+        ];
+        let positions = fields.iter().map(|field| json.find(&format!("\"{field}\":")).unwrap()).collect::<Vec<_>>();
+        let mut sorted_positions = positions.clone();
+        sorted_positions.sort_unstable();
+        assert_eq!(positions, sorted_positions);
     }
 
     #[test]

@@ -64,6 +64,7 @@ fn list_cli() -> Command {
         .alias("ls")
         .about("List Git worktrees")
         .arg(Arg::new("no-pr").long("no-pr").help("Skip GitHub pull request lookup").action(ArgAction::SetTrue))
+        .arg(Arg::new("json").long("json").help("Emit versioned machine-readable JSON, sorted by absolute worktree path").action(ArgAction::SetTrue))
 }
 
 fn path_cli() -> Command {
@@ -204,6 +205,7 @@ fn list_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
             home: &home,
             default_branch: &default_branch,
             pr_lookup: !args.get_flag("no-pr"),
+            json: args.get_flag("json"),
         },
     )
 }
