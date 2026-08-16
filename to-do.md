@@ -11,7 +11,7 @@ Scratch-specific behavior must never silently reset or delete a named worktree.
 ## General Worktree Utilities
 
 - [x] Make `bp worktree list` show every worktree with a stable name or path, branch or detached state, clean or dirty state, current or in-use state, and relevant tmux, process, remote, and pull-request information.
-- [ ] Add a generic `bp worktree enter <NAME|PATH>` operation that opens an existing worktree without resetting it or changing its lifecycle state.
+- [x] Add a generic `bp worktree enter <NAME|PATH>` operation that opens an existing worktree without resetting it or changing its lifecycle state.
 - [ ] Make `bp worktree path <NAME|PATH>` work for base, named, and scratch worktrees and keep its output clean for shell integrations.
 - [ ] Add machine-readable output for worktree discovery and status.
 - [x] Add generic process and active-session detection that can be reused by attach, return, remove, and prune operations.
@@ -29,7 +29,7 @@ The following tasks make those worktrees reusable and safely manageable.
 - [x] Add a return operation that can infer the current worktree when invoked from inside it.
 - [x] Refuse to discard tracked or untracked changes without confirmation.
 - [x] On return, detach `HEAD`, remove tracked and ordinary untracked changes, and preserve ignored build caches and dependencies where possible.
-- [ ] Mark the returned scratch worktree available for the next no-argument `new` or `n` operation.
+- [x] Mark the returned scratch worktree available for the next no-argument `new` or `n` operation.
 - [x] Run normal worktree link synchronization and scratch setup after reuse.
 - [x] Ensure two concurrent acquisitions cannot select the same scratch worktree.
 
@@ -38,7 +38,7 @@ The following tasks make those worktrees reusable and safely manageable.
 - [x] Detect processes whose working directory is inside a worktree.
 - [x] Detect active tmux sessions and other relevant local ownership signals.
 - [x] Keep process use, short-lived lifecycle reservations, and durable leases as separate facts.
-- [ ] Refuse automatic reuse, return, or destruction while a worktree is in use unless an explicit override is provided.
+- [x] Refuse automatic reuse, return, or destruction while a worktree is in use unless an explicit override is provided.
 - [x] Show the process or session reason when a worktree is skipped.
 
 ### Removal and Destruction
@@ -47,7 +47,7 @@ The following tasks make those worktrees reusable and safely manageable.
 - [x] Make scratch removal avoid branch deletion because scratch worktrees are detached and branchless.
 - [x] Keep returning a worktree for reuse separate from permanently destroying it.
 - [x] Add a dry-run preview for destructive removal.
-- [ ] Protect dirty, in-use, leased, and unverified worktrees by default.
+- [x] Protect dirty, in-use, leased, and unverified worktrees by default.
 - [x] Require separate explicit options for destructive risk classes such as including dirty or in-use worktrees.
 
 ### Pruning
