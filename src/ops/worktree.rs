@@ -1577,7 +1577,8 @@ impl WorktreeRow {
             state_color = BadgeColor::Yellow;
         }
         if lifecycle.in_use {
-            state = format!("{state},in-use:{}", lifecycle.in_use_reasons.join(","));
+            let summary = self.in_use.as_ref().map(in_use_badge).unwrap_or_else(|| "in-use".to_string());
+            state = format!("{state},{summary}");
             state_color = BadgeColor::YellowBold;
         }
         if lifecycle.unverified {
@@ -1873,6 +1874,22 @@ fn render_worktree_rows(rows: &[WorktreeRow], pr_render: PrRender<'_>, spinner: 
 
 fn loading_badge(label: &str, spinner: Option<char>) -> String {
     spinner.map(|spinner| format!("{label} {spinner}")).unwrap_or_default()
+}
+
+fn in_use_badge(inspection: &crate::utils::in_use::InUseInspection) -> String {
+    let mut categories = Vec::new();
+    if !inspection.processes.is_empty() {
+        categories.push(format!("{} processes", inspection.processes.len()));
+    }
+    if !inspection.active_sessions.is_empty() {
+        categories.push("tmux active".to_string());
+    }
+
+    if categories.is_empty() {
+        "in-use".to_string()
+    } else {
+        format!("in-use ({})", categories.join(", "))
+    }
 }
 
 fn count_badge(label: &str, count: usize) -> String {
@@ -2812,6 +2829,48 @@ linked = ["z.env", "./a.env", "z.env"]
             assert!(!state.available);
             assert!(!state.leased);
         }
+    }
+
+    #[test]
+    fn human_in_use_badge_summarizes_multiple_process_and_tmux_reasons() {
+        let inspection = crate::utils::in_use::InUseInspection {
+            processes: vec![
+                crate::utils::process::ProcessInfo { pid: 42, name: "shell".to_string(), command: "shell".to_string() },
+                crate::utils::process::ProcessInfo { pid: 43, name: "editor".to_string(), command: "editor".to_string() },
+            ],
+            active_sessions: vec!["repo-feature".to_string()],
+        };
+
+        assert_eq!(in_use_badge(&inspection), "in-use (2 processes, tmux active)");
+        assert!(!in_use_badge(&inspection).contains("42"));
+        assert!(!in_use_badge(&inspection).contains("shell"));
+        assert!(!in_use_badge(&inspection).contains("repo-feature"));
+    }
+
+    #[test]
+    fn json_preserves_multiple_process_and_tmux_reasons() {
+        let worktree =
+            Worktree { path: PathBuf::from("/tmp/repo-feature"), head: Some("0123456789abcdef".to_string()), branch: Some("feature".to_string()) };
+        let mut row = WorktreeRow::from_worktree(
+            Path::new("/tmp/repo"),
+            Path::new("/tmp/repo-feature"),
+            Path::new("/tmp/home"),
+            None,
+            &worktree,
+            Path::new("/tmp"),
+            false,
+        );
+        row.apply_status(StatusSummary::default());
+        row.in_use = Some(crate::utils::in_use::InUseInspection {
+            processes: vec![
+                crate::utils::process::ProcessInfo { pid: 42, name: "shell".to_string(), command: "shell".to_string() },
+                crate::utils::process::ProcessInfo { pid: 43, name: "editor".to_string(), command: "editor".to_string() },
+            ],
+            active_sessions: vec!["repo-feature".to_string()],
+        });
+
+        let json = JsonWorktree::from_row(&row, None);
+        assert_eq!(json.in_use_reasons, ["process:42 (shell)", "process:43 (editor)", "tmux:repo-feature"]);
     }
 
     #[test]

@@ -315,10 +315,9 @@ fn worktree_new_skips_dirty_in_use_and_named_scratch_candidates() {
 
     let mut child =
         Command::new("sleep").arg("30").current_dir(&in_use).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-    let pid = child.id();
     let detected = (0..80).any(|_| {
         let output = repo.bp(["worktree", "list", "--no-pr"]);
-        if stdout(&output).contains(&format!("in-use:process:{pid}")) {
+        if stdout(&output).lines().any(|line| line.contains("scratch-b-in-use") && line.contains("in-use (")) {
             true
         } else {
             thread::sleep(Duration::from_millis(25));
@@ -569,7 +568,7 @@ fn worktree_list_reports_process_use_without_matching_a_sibling_worktree() {
 
     let output = (0..80).find_map(|_| {
         let output = repo.bp(["worktree", "list", "--no-pr"]);
-        if stdout(&output).contains(&format!("in-use:process:{pid}")) {
+        if stdout(&output).contains("in-use (") {
             Some(output)
         } else {
             thread::sleep(Duration::from_millis(25));
@@ -585,11 +584,23 @@ fn worktree_list_reports_process_use_without_matching_a_sibling_worktree() {
     assert_success(&output, "list worktrees with process use");
     let text = stdout(&output);
     let feature_line = text.lines().find(|line| line.contains("repo-feature")).expect("feature worktree row");
-    assert!(feature_line.contains(&format!("in-use:process:{pid}")), "feature row did not report process use:\n{text}");
-    assert!(feature_line.contains("sleep"), "feature row did not report the process name:\n{text}");
+    assert!(feature_line.contains("in-use (1 processes)"), "feature row did not report a compact process summary:\n{text}");
+    assert!(!feature_line.contains(&pid), "human feature row exposed the process ID:\n{text}");
+    assert!(!feature_line.contains("sleep"), "human feature row exposed the process name:\n{text}");
 
     let sibling_line = text.lines().find(|line| line.contains("repo-feature-extra")).expect("sibling worktree row");
-    assert!(!sibling_line.contains("in-use:"), "sibling row was falsely reported in use:\n{text}");
+    assert!(!sibling_line.contains("in-use ("), "sibling row was falsely reported in use:\n{text}");
+
+    let json = repo.bp(["worktree", "list", "--json", "--no-pr"]);
+    assert_success(&json, "list worktrees with process use as JSON");
+    let document: serde_json::Value = serde_json::from_str(&stdout(&json)).expect("process-use JSON was invalid");
+    let feature_json = document["worktrees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["path"].as_str().unwrap().ends_with("repo-feature"))
+        .expect("feature JSON worktree row");
+    assert_eq!(feature_json["in_use_reasons"], serde_json::json!([format!("process:{pid} (sleep)")]));
 
     child.kill().expect("stop process in worktree");
     child.wait().expect("reap process in worktree");
@@ -939,7 +950,7 @@ fn worktree_list_reports_orthogonal_scratch_lifecycle_facts() {
     let output = (0..80).find_map(|_| {
         let output = repo.bp_with_env(["worktree", "list", "--no-pr"], &[("HOME", home.to_str().unwrap())]);
         let text = stdout(&output);
-        if text.contains("available") && text.contains("dirty") && text.contains("leased") && text.contains("in-use:") {
+        if text.contains("available") && text.contains("dirty") && text.contains("leased") && text.contains("in-use (") {
             Some(output)
         } else {
             thread::sleep(Duration::from_millis(25));
@@ -959,7 +970,7 @@ fn worktree_list_reports_orthogonal_scratch_lifecycle_facts() {
     assert!(dirty_line.contains("detached") && dirty_line.contains("dirty") && dirty_line.contains("available"), "dirty row omitted facts:\n{text}");
     let leased_line = text.lines().find(|line| line.contains("leased") && line.contains("scratch-")).expect("leased scratch row");
     assert!(
-        leased_line.contains("detached") && leased_line.contains("leased") && leased_line.contains("in-use:"),
+        leased_line.contains("detached") && leased_line.contains("leased") && leased_line.contains("in-use ("),
         "leased row omitted facts:\n{text}"
     );
 
