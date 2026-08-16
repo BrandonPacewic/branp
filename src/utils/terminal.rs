@@ -41,6 +41,7 @@ fn terminal_width() -> Option<usize> {
 }
 
 pub struct DynamicLines {
+    lines: Vec<String>,
     line_count: usize,
     enabled: bool,
 }
@@ -49,25 +50,50 @@ impl DynamicLines {
     pub fn print(lines: &[String]) -> io::Result<Self> {
         let enabled = supports_dynamic_lines();
         write_lines(lines)?;
-        Ok(Self { line_count: lines.len(), enabled })
+        Ok(Self { lines: lines.to_vec(), line_count: lines.len(), enabled })
     }
 
     pub fn replace(&mut self, lines: &[String]) -> io::Result<()> {
+        self.replace_if_changed(lines).map(|_| ())
+    }
+
+    fn replace_if_changed(&mut self, lines: &[String]) -> io::Result<bool> {
+        if self.lines == lines {
+            return Ok(false);
+        }
+
         if !self.enabled {
-            return Ok(());
+            self.lines = lines.to_vec();
+            self.line_count = lines.len();
+            return Ok(true);
         }
 
         let mut stdout = io::stdout();
-        if self.line_count > 0 {
-            write!(stdout, "\x1b[{}A", self.line_count)?;
-        }
-        for line in lines {
-            write!(stdout, "\r\x1b[2K{line}\n")?;
-        }
+        write_replacement(&mut stdout, self.line_count, lines)?;
         stdout.flush()?;
+        self.lines = lines.to_vec();
         self.line_count = lines.len();
-        Ok(())
+        Ok(true)
     }
+}
+
+fn write_replacement(writer: &mut impl Write, previous_line_count: usize, lines: &[String]) -> io::Result<()> {
+    if previous_line_count > 0 {
+        write!(writer, "\x1b[{previous_line_count}A")?;
+    }
+
+    let line_count = previous_line_count.max(lines.len());
+    for index in 0..line_count {
+        let line = lines.get(index).map(String::as_str).unwrap_or_default();
+        write!(writer, "\r\x1b[2K{line}\n")?;
+    }
+
+    if lines.len() < previous_line_count {
+        let cleared_lines = previous_line_count - lines.len();
+        write!(writer, "\x1b[{cleared_lines}A")?;
+    }
+
+    Ok(())
 }
 
 pub struct DynamicRenderLoop {
@@ -121,11 +147,9 @@ pub fn render_dynamic_updates<State, Update>(
                     pending -= 1;
                 }
 
-                frame.replace(&render(state, Some(frame.spinner())))?;
+                frame.replace(&render(state, Some('-')))?;
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                frame.advance(&render(state, Some(frame.spinner())))?;
-            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
@@ -144,6 +168,59 @@ fn write_lines(lines: &[String]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacement_clears_trailing_lines_and_restores_cursor_position() {
+        let mut output = Vec::new();
+        write_replacement(&mut output, 3, &["updated".to_string()]).unwrap();
+
+        assert_eq!(String::from_utf8(output).unwrap(), "\x1b[3A\r\x1b[2Kupdated\n\r\x1b[2K\n\r\x1b[2K\n\x1b[2A");
+    }
+
+    #[test]
+    fn replacement_preserves_all_lines_when_frame_grows() {
+        let mut output = Vec::new();
+        write_replacement(&mut output, 1, &["first".to_string(), "second".to_string()]).unwrap();
+
+        assert_eq!(String::from_utf8(output).unwrap(), "\x1b[1A\r\x1b[2Kfirst\n\r\x1b[2Ksecond\n");
+    }
+
+    #[test]
+    fn identical_frames_are_not_replacements() {
+        let lines = vec!["same".to_string()];
+        let mut frame = DynamicLines { lines: lines.clone(), line_count: lines.len(), enabled: false };
+
+        assert!(!frame.replace_if_changed(&lines).unwrap());
+        assert!(frame.replace_if_changed(&["changed".to_string()]).unwrap());
+
+        assert_eq!(frame.lines, vec!["changed".to_string()]);
+    }
+
+    #[test]
+    fn dynamic_updates_do_not_render_timeout_only_frames() {
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(250));
+            sender.send(()).unwrap();
+        });
+
+        let mut state = 0;
+        let mut renders = 0;
+        render_dynamic_updates(
+            &mut state,
+            1,
+            receiver,
+            |state, _spinner| {
+                renders += 1;
+                vec![state.to_string()]
+            },
+            |state, ()| *state += 1,
+        )
+        .unwrap();
+
+        assert_eq!(state, 1);
+        assert_eq!(renders, 3, "initial, changed update, and final render only");
+    }
 
     #[test]
     fn configured_width_prefers_valid_columns_over_terminal_width() {

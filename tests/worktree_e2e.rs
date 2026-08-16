@@ -8,6 +8,28 @@ use std::path::{Path, PathBuf};
 
 use support::{assert_success, stderr, stdout, GitRepo, TestWorkspace};
 
+#[cfg(unix)]
+fn count_csi_terminator(value: &str, terminator: u8) -> usize {
+    let bytes = value.as_bytes();
+    let mut count = 0;
+    let mut index = 0;
+    while index + 2 < bytes.len() {
+        if bytes[index] != b'\x1b' || bytes[index + 1] != b'[' {
+            index += 1;
+            continue;
+        }
+
+        index += 2;
+        while index < bytes.len() && (bytes[index].is_ascii_digit() || bytes[index] == b';') {
+            index += 1;
+        }
+        if index < bytes.len() && bytes[index] == terminator {
+            count += 1;
+        }
+    }
+    count
+}
+
 #[test]
 fn worktree_new_reuses_existing_local_branch_without_source_prompt() {
     let workspace = TestWorkspace::new("worktree-new-existing-local-branch");
@@ -672,6 +694,9 @@ fn worktree_list_bounds_default_and_verbose_pipe_output_without_changing_json() 
     assert_success(&output, "bounded default worktree list");
     let default_text = stdout(&output);
     assert!(default_text.contains('…'), "default output did not make truncation visible:\n{default_text}");
+    assert_eq!(count_csi_terminator(&default_text, b'A'), 0, "pipe output emitted cursor movement:\n{default_text:?}");
+    assert_eq!(count_csi_terminator(&default_text, b'K'), 0, "pipe output emitted line clearing:\n{default_text:?}");
+    assert_eq!(default_text.lines().count(), 2, "pipe output repainted the table:\n{default_text}");
     for line in default_text.lines() {
         assert!(unicode_width::UnicodeWidthStr::width(strip_ansi(line).as_str()) <= 80, "default line exceeded COLUMNS=80:\n{default_text}");
     }
@@ -680,6 +705,9 @@ fn worktree_list_bounds_default_and_verbose_pipe_output_without_changing_json() 
     assert_success(&verbose, "bounded verbose worktree list");
     let verbose_text = stdout(&verbose);
     assert!(verbose_text.contains('…'), "verbose output did not make truncation visible:\n{verbose_text}");
+    assert_eq!(count_csi_terminator(&verbose_text, b'A'), 0, "verbose pipe output emitted cursor movement:\n{verbose_text:?}");
+    assert_eq!(count_csi_terminator(&verbose_text, b'K'), 0, "verbose pipe output emitted line clearing:\n{verbose_text:?}");
+    assert_eq!(verbose_text.lines().count(), 2, "verbose pipe output repainted the table:\n{verbose_text}");
     for line in verbose_text.lines() {
         assert!(unicode_width::UnicodeWidthStr::width(strip_ansi(line).as_str()) <= 80, "verbose line exceeded COLUMNS=80:\n{verbose_text}");
     }
@@ -697,6 +725,47 @@ fn worktree_list_bounds_default_and_verbose_pipe_output_without_changing_json() 
 
     child.kill().expect("stop process after width checks");
     child.wait().expect("reap process after width checks");
+}
+
+#[cfg(unix)]
+#[test]
+fn worktree_list_tty_suppresses_spinner_redraws_and_reports_state_changes() {
+    let workspace = TestWorkspace::new("worktree-list-tty-redraw");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+
+    for branch in ["feature-a", "feature-b"] {
+        repo.git(["branch", branch]);
+        let path = repo.sibling(branch);
+        repo.git(["worktree", "add", path.to_str().unwrap(), branch]);
+    }
+
+    let capture = repo.sibling("tty-capture");
+    let tty = Command::new("script")
+        .args(["-q", capture.to_str().unwrap(), env!("CARGO_BIN_EXE_bp"), "worktree", "list", "--no-pr"])
+        .current_dir(repo.path())
+        .env("COLUMNS", "80")
+        .output()
+        .expect("run worktree list through a real TTY");
+    assert_success(&tty, "TTY worktree list");
+
+    let captured = fs::read_to_string(&capture).expect("read TTY capture");
+    let cursor_ups = count_csi_terminator(&captured, b'A');
+    assert!(cursor_ups > 0, "TTY listing never performed a meaningful redraw:\n{captured:?}");
+    assert!(cursor_ups <= 5, "TTY listing repainted beyond the five possible state updates:\n{captured:?}");
+    assert!(count_csi_terminator(&captured, b'K') > 0, "TTY listing did not clear changed rows:\n{captured:?}");
+    assert!(captured.ends_with('\n'), "TTY listing did not leave the cursor after the table:\n{captured:?}");
+
+    let clean = repo.bp(["worktree", "list", "--no-pr"]);
+    assert_success(&clean, "clean worktree list after TTY capture");
+    assert!(stdout(&clean).contains("feature-a"));
+
+    fs::write(repo.sibling("feature-a").join("file.txt"), "changed\n").unwrap();
+    let dirty = repo.bp(["worktree", "list", "--no-pr"]);
+    assert_success(&dirty, "changed worktree list after TTY capture");
+    let dirty_text = stdout(&dirty);
+    let feature_line = dirty_text.lines().find(|line| line.contains("feature-a")).expect("changed feature row");
+    assert!(feature_line.contains("dirty"), "controlled worktree change was not displayed:\n{dirty_text}");
 }
 
 #[test]
