@@ -15,7 +15,7 @@ Scratch-specific behavior must never silently reset or delete a named worktree.
 - [x] Make `bp worktree path <NAME|PATH>` work for base, named, and scratch worktrees and keep its output clean for shell integrations.
 - [ ] Add machine-readable output for worktree discovery and status.
 - [x] Add generic process and active-session detection that can be reused by attach, return, remove, and prune operations.
-- [ ] Define clear lifecycle states such as current, available, in-use, dirty, detached, leased, and unverified.
+- [x] Define clear lifecycle states such as current, available, in-use, dirty, detached, leased, and unverified.
 
 ## Scratch Worktree Lifecycle
 
