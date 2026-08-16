@@ -36,6 +36,7 @@ pub struct EnterOptions<'a> {
 pub struct ListOptions<'a> {
     pub base: &'a Path,
     pub current: &'a Path,
+    pub home: &'a Path,
     pub default_branch: &'a str,
     pub pr_lookup: bool,
 }
@@ -140,6 +141,13 @@ struct WorktreeTargetOptions<'a> {
     home: &'a Path,
     default_branch: &'a str,
     target: &'a str,
+}
+
+struct WorktreeListContext<'a> {
+    base: &'a Path,
+    current: &'a Path,
+    home: &'a Path,
+    durable_state: Option<&'a State>,
 }
 
 struct ResolvedRemoveTarget {
@@ -437,9 +445,11 @@ pub fn list(gctx: &mut GlobalContext, options: &ListOptions<'_>) -> CliResult {
 
     let worktrees = worktrees(options.base)?;
     let path_root = common_parent(&worktrees);
+    let durable_state = list_durable_state(gctx, options.home, options.base, &worktrees)?;
+    let context = WorktreeListContext { base: options.base, current: options.current, home: options.home, durable_state: durable_state.as_ref() };
     let verbose = gctx.is_verbose();
     if !crate::utils::terminal::supports_dynamic_lines() {
-        let rows = resolve_worktree_rows(options.base, options.current, options.default_branch, &worktrees, &path_root, verbose)?;
+        let rows = resolve_worktree_rows(&context, options.default_branch, &worktrees, &path_root, verbose)?;
         let pr_numbers = if options.pr_lookup { crate::utils::gh::open_pull_requests(options.base).unwrap_or_default() } else { Vec::new() };
         let pr_render = if options.pr_lookup { PrRender::Resolved(&pr_numbers) } else { PrRender::Disabled };
 
@@ -449,7 +459,7 @@ pub fn list(gctx: &mut GlobalContext, options: &ListOptions<'_>) -> CliResult {
         return Ok(());
     }
 
-    render_worktree_rows_dynamic(options.base, options.current, options.default_branch, worktrees, &path_root, verbose, options.pr_lookup)
+    render_worktree_rows_dynamic(&context, options.default_branch, worktrees, &path_root, verbose, options.pr_lookup)
 }
 
 pub fn track(gctx: &mut GlobalContext, options: &TrackOptions<'_>) -> CliResult {
@@ -1228,16 +1238,18 @@ pub fn gone(gctx: &mut GlobalContext, options: &GoneOptions<'_>) -> CliResult {
 }
 
 fn resolve_worktree_rows(
-    base: &Path,
-    current: &Path,
+    context: &WorktreeListContext<'_>,
     default_branch: &str,
     worktrees: &[Worktree],
     path_root: &Path,
     verbose: bool,
 ) -> Result<Vec<WorktreeRow>, CliError> {
-    let remote_branches = crate::utils::git::remote_branches(base, "origin").unwrap_or_default();
+    let remote_branches = crate::utils::git::remote_branches(context.base, "origin").unwrap_or_default();
     let tmux_sessions: HashSet<_> = crate::utils::tmux::sessions().unwrap_or_default().into_iter().collect();
-    let mut rows: Vec<_> = worktrees.iter().map(|worktree| WorktreeRow::from_worktree(base, current, worktree, path_root, verbose)).collect();
+    let mut rows: Vec<_> = worktrees
+        .iter()
+        .map(|worktree| WorktreeRow::from_worktree(context.base, context.current, context.home, context.durable_state, worktree, path_root, verbose))
+        .collect();
     let handles: Vec<_> = worktrees
         .iter()
         .enumerate()
@@ -1270,15 +1282,17 @@ fn resolve_worktree_rows(
 }
 
 fn render_worktree_rows_dynamic(
-    base: &Path,
-    current: &Path,
+    context: &WorktreeListContext<'_>,
     default_branch: &str,
     worktrees: Vec<Worktree>,
     path_root: &Path,
     verbose: bool,
     pr_lookup: bool,
 ) -> CliResult {
-    let rows: Vec<_> = worktrees.iter().map(|worktree| WorktreeRow::from_worktree(base, current, worktree, path_root, verbose)).collect();
+    let rows: Vec<_> = worktrees
+        .iter()
+        .map(|worktree| WorktreeRow::from_worktree(context.base, context.current, context.home, context.durable_state, worktree, path_root, verbose))
+        .collect();
     let (tx, rx) = mpsc::channel();
     let mut pending = 0;
 
@@ -1296,7 +1310,7 @@ fn render_worktree_rows_dynamic(
 
     {
         let tx = tx.clone();
-        let repo_base = base.to_path_buf();
+        let repo_base = context.base.to_path_buf();
         thread::spawn(move || {
             let _ = tx.send(WorktreeUpdate::RemoteBranches(crate::utils::git::remote_branches(&repo_base, "origin").unwrap_or_default()));
         });
@@ -1314,7 +1328,7 @@ fn render_worktree_rows_dynamic(
 
     if pr_lookup {
         let tx = tx.clone();
-        let repo_base = base.to_path_buf();
+        let repo_base = context.base.to_path_buf();
         thread::spawn(move || {
             let _ = tx.send(WorktreeUpdate::PullRequests(crate::utils::gh::open_pull_requests(&repo_base).unwrap_or_default()));
         });
@@ -1372,6 +1386,62 @@ impl StatusSummary {
     }
 }
 
+/// The lifecycle model is a set of independent facts, not a mutually exclusive
+/// label. Durable availability is reported alongside live facts so a stale
+/// `available` record cannot hide a worktree that is dirty or in use. A scratch
+/// worktree without trusted durable metadata, or with a transitional or
+/// quarantined record, is `unverified` and is never presented as available.
+///
+/// Fact precedence is deterministic: durable metadata determines `available`,
+/// `leased`, or `unverified`; Git determines `dirty` and `detached`; and live
+/// inspection determines `in_use`. None of these facts suppresses another one.
+/// In particular, `available,dirty` and `leased,in-use` are intentional
+/// combinations. Reuse operations must still apply their safety checks.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LifecycleState {
+    pub base: bool,
+    pub current: bool,
+    pub available: bool,
+    pub in_use: bool,
+    pub dirty: bool,
+    pub detached: bool,
+    pub leased: bool,
+    pub unverified: bool,
+    pub in_use_reasons: Vec<String>,
+}
+
+struct LifecycleSignals<'a> {
+    base: bool,
+    current: bool,
+    detached: bool,
+    dirty: Option<bool>,
+    scratch: bool,
+    durable_availability: Option<Availability>,
+    in_use_reasons: &'a [String],
+}
+
+impl LifecycleState {
+    fn classify(signals: LifecycleSignals<'_>) -> Self {
+        let unverified = signals.scratch
+            && matches!(
+                signals.durable_availability,
+                None | Some(Availability::Provisioning | Availability::Cleaning | Availability::Destroying | Availability::Quarantined)
+            );
+
+        Self {
+            base: signals.base,
+            current: signals.current,
+            available: signals.scratch && signals.durable_availability == Some(Availability::Available),
+            in_use: !signals.in_use_reasons.is_empty(),
+            dirty: signals.dirty.unwrap_or(false),
+            detached: signals.detached,
+            leased: signals.scratch && signals.durable_availability == Some(Availability::Leased),
+            unverified,
+            in_use_reasons: signals.in_use_reasons.to_vec(),
+        }
+    }
+}
+
 struct WorktreeRow {
     path: String,
     branch: String,
@@ -1380,6 +1450,8 @@ struct WorktreeRow {
     source_base: PathBuf,
     base: bool,
     current: bool,
+    scratch: bool,
+    durable_availability: Option<Availability>,
     verbose: bool,
     status: Option<StatusSummary>,
     remote_gone: Option<bool>,
@@ -1390,8 +1462,20 @@ struct WorktreeRow {
 }
 
 impl WorktreeRow {
-    fn from_worktree(base: &Path, current: &Path, worktree: &Worktree, path_root: &Path, verbose: bool) -> Self {
+    fn from_worktree(
+        base: &Path,
+        current: &Path,
+        home: &Path,
+        durable_state: Option<&State>,
+        worktree: &Worktree,
+        path_root: &Path,
+        verbose: bool,
+    ) -> Self {
         let branch = worktree.branch.as_deref().unwrap_or("detached");
+        let scratch_name = scratch_worktree_name(home, worktree);
+        let scratch = scratch_name.is_some();
+        let durable_availability =
+            scratch_name.and_then(|name| durable_state.and_then(|state| state.entries.get(&name)).map(|entry| entry.availability));
         Self {
             path: display_path(&worktree.path, path_root),
             branch: branch.to_string(),
@@ -1400,6 +1484,8 @@ impl WorktreeRow {
             source_base: base.to_path_buf(),
             base: same_worktree_path(&worktree.path, base),
             current: same_worktree_path(&worktree.path, current),
+            scratch,
+            durable_availability,
             verbose,
             status: None,
             remote_gone: None,
@@ -1439,7 +1525,21 @@ impl WorktreeRow {
         self.status.as_ref().map(StatusSummary::is_dirty)
     }
 
+    fn lifecycle_state(&self) -> LifecycleState {
+        let in_use_reasons = self.in_use_reasons();
+        LifecycleState::classify(LifecycleSignals {
+            base: self.base,
+            current: self.current,
+            detached: self.branch == "detached",
+            dirty: self.status.as_ref().map(StatusSummary::is_dirty),
+            scratch: self.scratch,
+            durable_availability: self.durable_availability,
+            in_use_reasons: &in_use_reasons,
+        })
+    }
+
     fn badges(&self, pr: DynamicBadge, spinner: Option<char>) -> WorktreeBadges {
+        let lifecycle = self.lifecycle_state();
         let (mut state, mut state_color) = match &self.status {
             Some(status) if status.is_dirty() => {
                 let details = status.tracked_badge();
@@ -1450,17 +1550,29 @@ impl WorktreeRow {
             None => (loading_badge("status", spinner), BadgeColor::Black),
         };
 
-        if self.base {
+        if lifecycle.base {
             state = format!("base,{state}");
         }
-        if self.current {
+        if lifecycle.detached {
+            state = format!("{state},detached");
+        }
+        if lifecycle.current {
             state = format!("{state},current");
         }
-
-        let in_use_reasons = self.in_use_reasons();
-        if !in_use_reasons.is_empty() {
-            state = format!("{state},in-use:{}", in_use_reasons.join(","));
+        if lifecycle.available {
+            state = format!("{state},available");
+        }
+        if lifecycle.leased {
+            state = format!("{state},leased");
+            state_color = BadgeColor::Yellow;
+        }
+        if lifecycle.in_use {
+            state = format!("{state},in-use:{}", lifecycle.in_use_reasons.join(","));
             state_color = BadgeColor::YellowBold;
+        }
+        if lifecycle.unverified {
+            state = format!("{state},unverified");
+            state_color = BadgeColor::RedBold;
         }
 
         WorktreeBadges {
@@ -2056,6 +2168,30 @@ fn scratch_dir(home: &Path) -> PathBuf {
     home.join(".bp/worktrees")
 }
 
+fn scratch_worktree_name(home: &Path, worktree: &Worktree) -> Option<String> {
+    if worktree.branch.is_some() {
+        return None;
+    }
+
+    let root = scratch_dir(home);
+    let root = root.canonicalize().unwrap_or(root);
+    let path = worktree.path.canonicalize().unwrap_or_else(|_| worktree.path.clone());
+    if path.parent() != Some(root.as_path()) {
+        return None;
+    }
+
+    let name = path.file_name()?.to_str()?;
+    name.starts_with("scratch-").then(|| name.to_string())
+}
+
+fn list_durable_state(gctx: &mut GlobalContext, home: &Path, base: &Path, worktrees: &[Worktree]) -> Result<Option<State>, CliError> {
+    if !worktrees.iter().any(|worktree| scratch_worktree_name(home, worktree).is_some()) {
+        return Ok(None);
+    }
+
+    state_snapshot(gctx, home, base).map(Some)
+}
+
 fn scratch_registered_worktrees(base: &Path, root: &Path) -> Result<Vec<Registered>, CliError> {
     let Some(root) = root.canonicalize().ok() else {
         return Ok(Vec::new());
@@ -2497,6 +2633,81 @@ linked = ["z.env", "./a.env", "z.env"]
     #[test]
     fn scratch_target_uses_a_dedicated_user_directory() {
         assert_eq!(scratch_dir(Path::new("/tmp/home")), PathBuf::from("/tmp/home/.bp/worktrees"));
+    }
+
+    fn classify_for_test(
+        base: bool,
+        current: bool,
+        detached: bool,
+        dirty: Option<bool>,
+        scratch: bool,
+        durable_availability: Option<Availability>,
+        in_use_reasons: &[&str],
+    ) -> LifecycleState {
+        let reasons = in_use_reasons.iter().map(|reason| (*reason).to_string()).collect::<Vec<_>>();
+        LifecycleState::classify(LifecycleSignals { base, current, detached, dirty, scratch, durable_availability, in_use_reasons: &reasons })
+    }
+
+    #[test]
+    fn lifecycle_state_preserves_base_current_and_named_facts() {
+        let state = classify_for_test(true, true, false, Some(false), false, None, &[]);
+
+        assert!(state.base);
+        assert!(state.current);
+        assert!(!state.detached);
+        assert!(!state.available);
+        assert!(!state.leased);
+        assert!(!state.unverified);
+    }
+
+    #[test]
+    fn lifecycle_state_reports_clean_detached_available_scratch() {
+        let state = classify_for_test(false, false, true, Some(false), true, Some(Availability::Available), &[]);
+
+        assert_eq!(state, LifecycleState { detached: true, available: true, ..LifecycleState::default() });
+    }
+
+    #[test]
+    fn lifecycle_state_keeps_dirty_and_in_use_alongside_available() {
+        let state = classify_for_test(false, true, true, Some(true), true, Some(Availability::Available), &["process:42 (shell)"]);
+
+        assert!(state.current);
+        assert!(state.detached);
+        assert!(state.dirty);
+        assert!(state.available);
+        assert!(state.in_use);
+        assert_eq!(state.in_use_reasons, ["process:42 (shell)"]);
+        assert!(!state.leased);
+        assert!(!state.unverified);
+    }
+
+    #[test]
+    fn lifecycle_state_keeps_leased_dirty_and_in_use_facts() {
+        let state = classify_for_test(false, false, true, Some(true), true, Some(Availability::Leased), &["tmux:repo-scratch"]);
+
+        assert!(state.detached);
+        assert!(state.dirty);
+        assert!(state.leased);
+        assert!(state.in_use);
+        assert!(!state.available);
+        assert!(!state.unverified);
+    }
+
+    #[test]
+    fn lifecycle_state_fails_closed_for_missing_and_untrusted_scratch_state() {
+        for availability in
+            [None, Some(Availability::Provisioning), Some(Availability::Cleaning), Some(Availability::Destroying), Some(Availability::Quarantined)]
+        {
+            let state = classify_for_test(true, true, true, Some(true), true, availability, &["process:42 (shell)"]);
+
+            assert!(state.current);
+            assert!(state.detached);
+            assert!(state.dirty);
+            assert!(state.in_use);
+            assert!(state.unverified);
+            assert!(!state.available);
+            assert!(!state.leased);
+        }
     }
 
     #[test]

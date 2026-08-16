@@ -195,9 +195,16 @@ fn sync_cli() -> Command {
 fn list_exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
     let repo = ops::Repo::discover(gctx.cwd())?;
     let default_branch = repo.default_branch()?;
+    let home = gctx.home().clone();
     ops::list(
         gctx,
-        &ops::ListOptions { base: &repo.base, current: &repo.current, default_branch: &default_branch, pr_lookup: !args.get_flag("no-pr") },
+        &ops::ListOptions {
+            base: &repo.base,
+            current: &repo.current,
+            home: &home,
+            default_branch: &default_branch,
+            pr_lookup: !args.get_flag("no-pr"),
+        },
     )
 }
 

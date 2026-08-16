@@ -820,6 +820,76 @@ fn worktree_list_reports_base_named_and_detached_worktrees_with_state() {
 
 #[cfg(unix)]
 #[test]
+fn worktree_list_reports_orthogonal_scratch_lifecycle_facts() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let workspace = TestWorkspace::new("worktree-list-lifecycle-facts");
+    let repo = workspace.git_repo("repo", "mega");
+    repo.commit_file("file.txt", "base\n", "initial");
+    let home = repo.sibling("home");
+
+    let shell = home.join("leased-shell");
+    let state_path = home.join(".bp/worktrees/state.toml");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(&shell, "#!/bin/sh\nsleep 30 >/dev/null 2>&1\n").unwrap();
+    fs::set_permissions(&shell, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut leased = Command::new(env!("CARGO_BIN_EXE_bp"))
+        .args(["worktree", "new", "--no-submodules"])
+        .current_dir(repo.path())
+        .env("HOME", home.to_str().unwrap())
+        .env("SHELL", shell.to_str().unwrap())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let ready = (0..120).any(|_| {
+        fs::read_to_string(&state_path).map(|state| state.contains("availability = \"leased\"")).unwrap_or(false) || {
+            thread::sleep(Duration::from_millis(25));
+            false
+        }
+    });
+    assert!(ready, "scratch acquisition never exposed its leased durable state");
+
+    let clean = add_detached_scratch(&repo, &home, "scratch-clean");
+    let dirty = add_detached_scratch(&repo, &home, "scratch-dirty");
+    fs::write(dirty.join("file.txt"), "dirty\n").unwrap();
+
+    let output = (0..80).find_map(|_| {
+        let output = repo.bp_with_env(["worktree", "list", "--no-pr"], &[("HOME", home.to_str().unwrap())]);
+        let text = stdout(&output);
+        if text.contains("available") && text.contains("dirty") && text.contains("leased") && text.contains("in-use:") {
+            Some(output)
+        } else {
+            thread::sleep(Duration::from_millis(25));
+            None
+        }
+    });
+    let Some(output) = output else {
+        leased.kill().unwrap();
+        leased.wait().unwrap();
+        panic!("worktree list did not expose the expected lifecycle facts");
+    };
+    assert_success(&output, "list scratch lifecycle facts");
+    let text = stdout(&output);
+    let clean_line = text.lines().find(|line| line.contains("scratch-clean")).expect("clean scratch row");
+    assert!(clean_line.contains("detached") && clean_line.contains("clean") && clean_line.contains("available"), "clean row omitted facts:\n{text}");
+    let dirty_line = text.lines().find(|line| line.contains("scratch-dirty")).expect("dirty scratch row");
+    assert!(dirty_line.contains("detached") && dirty_line.contains("dirty") && dirty_line.contains("available"), "dirty row omitted facts:\n{text}");
+    let leased_line = text.lines().find(|line| line.contains("leased") && line.contains("scratch-")).expect("leased scratch row");
+    assert!(
+        leased_line.contains("detached") && leased_line.contains("leased") && leased_line.contains("in-use:"),
+        "leased row omitted facts:\n{text}"
+    );
+
+    leased.kill().unwrap();
+    leased.wait().unwrap();
+    assert!(clean.is_dir() && dirty.is_dir());
+}
+
+#[cfg(unix)]
+#[test]
 fn interrupted_scratch_acquisition_is_not_reused_until_explicit_recovery() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -891,6 +961,14 @@ fn missing_or_corrupt_scratch_state_quarantines_existing_worktrees() {
     assert_success(&missing_output, "new scratch with missing state");
     let missing_text = format!("{}{}", stdout(&missing_output), stderr(&missing_output));
     assert!(missing_text.contains("state is missing") && missing_text.contains("quarantined"), "missing state lacked diagnostics:\n{missing_text}");
+    let missing_list = repo.bp_with_env(["worktree", "list", "--no-pr"], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&missing_list, "list missing-state scratch");
+    let missing_list_text = stdout(&missing_list);
+    let missing_line = missing_list_text.lines().find(|line| line.contains("scratch-missing-state")).expect("missing-state scratch row");
+    assert!(
+        missing_line.contains("detached") && missing_line.contains("unverified"),
+        "missing state was not rendered unverified:\n{missing_list_text}"
+    );
     let released = repo.bp_with_env(["worktree", "recover", "release", missing.to_str().unwrap()], &[("HOME", home.to_str().unwrap())]);
     assert_success(&released, "release missing-state scratch");
 
@@ -899,6 +977,11 @@ fn missing_or_corrupt_scratch_state_quarantines_existing_worktrees() {
     assert_success(&corrupt_output, "new scratch with corrupt state");
     let corrupt_text = format!("{}{}", stdout(&corrupt_output), stderr(&corrupt_output));
     assert!(corrupt_text.contains("state is corrupt") && corrupt_text.contains("quarantined"), "corrupt state lacked diagnostics:\n{corrupt_text}");
+    let corrupt_list = repo.bp_with_env(["worktree", "list", "--no-pr"], &[("HOME", home.to_str().unwrap())]);
+    assert_success(&corrupt_list, "list corrupt-state scratch");
+    let corrupt_list_text = stdout(&corrupt_list);
+    let corrupt_line = corrupt_list_text.lines().find(|line| line.contains("scratch-missing-state")).expect("corrupt-state scratch row");
+    assert!(corrupt_line.contains("unverified"), "corrupt state was not rendered unverified:\n{corrupt_list_text}");
     assert!(fs::read_dir(home.join(".bp/worktrees")).unwrap().any(|entry| entry
         .unwrap()
         .file_name()
