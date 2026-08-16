@@ -591,6 +591,16 @@ fn worktree_list_reports_process_use_without_matching_a_sibling_worktree() {
     let sibling_line = text.lines().find(|line| line.contains("repo-feature-extra")).expect("sibling worktree row");
     assert!(!sibling_line.contains("in-use ("), "sibling row was falsely reported in use:\n{text}");
 
+    let verbose = repo.bp(["worktree", "list", "--no-pr", "--verbose"]);
+    assert_success(&verbose, "list worktrees with verbose process use");
+    let verbose_text = stdout(&verbose);
+    let verbose_feature_line = verbose_text.lines().find(|line| line.contains("repo-feature")).expect("verbose feature worktree row");
+    assert!(
+        verbose_feature_line.contains(&format!("process:{pid} (sleep)")),
+        "verbose feature row omitted the exact process reason:\n{verbose_text}"
+    );
+    assert!(!verbose_feature_line.contains("in-use (1 processes)"), "verbose feature row retained only the compact process summary:\n{verbose_text}");
+
     let json = repo.bp(["worktree", "list", "--json", "--no-pr"]);
     assert_success(&json, "list worktrees with process use as JSON");
     let document: serde_json::Value = serde_json::from_str(&stdout(&json)).expect("process-use JSON was invalid");

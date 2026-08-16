@@ -1577,7 +1577,7 @@ impl WorktreeRow {
             state_color = BadgeColor::Yellow;
         }
         if lifecycle.in_use {
-            let summary = self.in_use.as_ref().map(in_use_badge).unwrap_or_else(|| "in-use".to_string());
+            let summary = self.in_use.as_ref().map(|inspection| in_use_badge(inspection, self.verbose)).unwrap_or_else(|| "in-use".to_string());
             state = format!("{state},{summary}");
             state_color = BadgeColor::YellowBold;
         }
@@ -1876,7 +1876,11 @@ fn loading_badge(label: &str, spinner: Option<char>) -> String {
     spinner.map(|spinner| format!("{label} {spinner}")).unwrap_or_default()
 }
 
-fn in_use_badge(inspection: &crate::utils::in_use::InUseInspection) -> String {
+fn in_use_badge(inspection: &crate::utils::in_use::InUseInspection, verbose: bool) -> String {
+    if verbose {
+        return format!("in-use ({})", inspection.reasons().join(", "));
+    }
+
     let mut categories = Vec::new();
     if !inspection.processes.is_empty() {
         categories.push(format!("{} processes", inspection.processes.len()));
@@ -2841,10 +2845,20 @@ linked = ["z.env", "./a.env", "z.env"]
             active_sessions: vec!["repo-feature".to_string()],
         };
 
-        assert_eq!(in_use_badge(&inspection), "in-use (2 processes, tmux active)");
-        assert!(!in_use_badge(&inspection).contains("42"));
-        assert!(!in_use_badge(&inspection).contains("shell"));
-        assert!(!in_use_badge(&inspection).contains("repo-feature"));
+        assert_eq!(in_use_badge(&inspection, false), "in-use (2 processes, tmux active)");
+        assert!(!in_use_badge(&inspection, false).contains("42"));
+        assert!(!in_use_badge(&inspection, false).contains("shell"));
+        assert!(!in_use_badge(&inspection, false).contains("repo-feature"));
+    }
+
+    #[test]
+    fn verbose_human_in_use_badge_shows_exact_process_and_tmux_reasons() {
+        let inspection = crate::utils::in_use::InUseInspection {
+            processes: vec![crate::utils::process::ProcessInfo { pid: 42, name: "shell".to_string(), command: "shell".to_string() }],
+            active_sessions: vec!["repo-feature".to_string()],
+        };
+
+        assert_eq!(in_use_badge(&inspection, true), "in-use (process:42 (shell), tmux:repo-feature)");
     }
 
     #[test]

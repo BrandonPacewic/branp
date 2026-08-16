@@ -63,6 +63,7 @@ fn list_cli() -> Command {
     Command::new("list")
         .alias("ls")
         .about("List Git worktrees")
+        .after_help("Use -v or --verbose for exact in-use process and tmux session reasons.")
         .arg(Arg::new("no-pr").long("no-pr").help("Skip GitHub pull request lookup").action(ArgAction::SetTrue))
         .arg(Arg::new("json").long("json").help("Emit versioned machine-readable JSON, sorted by absolute worktree path").action(ArgAction::SetTrue))
 }
