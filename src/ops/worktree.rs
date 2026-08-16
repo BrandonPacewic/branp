@@ -1960,8 +1960,9 @@ fn in_use_badge(inspection: &crate::utils::in_use::InUseInspection, verbose: boo
     }
 
     let mut categories = Vec::new();
-    if !inspection.processes.is_empty() {
-        categories.push(format!("{} processes", inspection.processes.len()));
+    let visible_processes = inspection.processes.iter().filter(|process| !crate::utils::process::is_known_launcher_process(process)).count();
+    if visible_processes > 0 {
+        categories.push(format!("{visible_processes} processes"));
     }
     if !inspection.active_sessions.is_empty() {
         categories.push("tmux active".to_string());
@@ -2949,6 +2950,34 @@ linked = ["z.env", "./a.env", "z.env"]
     }
 
     #[test]
+    fn human_in_use_badge_filters_launcher_processes_but_keeps_in_use() {
+        let inspection = crate::utils::in_use::InUseInspection {
+            processes: vec![
+                crate::utils::process::ProcessInfo { pid: 42, name: "treehouse".to_string(), command: "treehouse get".to_string() },
+                crate::utils::process::ProcessInfo { pid: 43, name: "codex".to_string(), command: "/opt/codex/bin/codex --model gpt".to_string() },
+            ],
+            active_sessions: vec!["repo-feature".to_string()],
+        };
+
+        assert_eq!(in_use_badge(&inspection, false), "in-use (tmux active)");
+        assert_eq!(in_use_badge(&inspection, true), "in-use (process:42 (treehouse), process:43 (codex), tmux:repo-feature)");
+    }
+
+    #[test]
+    fn human_in_use_badge_keeps_real_processes_in_mixed_launcher_use() {
+        let inspection = crate::utils::in_use::InUseInspection {
+            processes: vec![
+                crate::utils::process::ProcessInfo { pid: 42, name: "treehouse".to_string(), command: "treehouse get".to_string() },
+                crate::utils::process::ProcessInfo { pid: 43, name: "editor".to_string(), command: "editor /tmp/file".to_string() },
+            ],
+            active_sessions: vec!["repo-feature".to_string()],
+        };
+
+        assert_eq!(in_use_badge(&inspection, false), "in-use (1 processes, tmux active)");
+        assert_eq!(in_use_badge(&inspection, true), "in-use (process:42 (treehouse), process:43 (editor), tmux:repo-feature)");
+    }
+
+    #[test]
     fn verbose_human_in_use_badge_shows_exact_process_and_tmux_reasons() {
         let inspection = crate::utils::in_use::InUseInspection {
             processes: vec![crate::utils::process::ProcessInfo { pid: 42, name: "shell".to_string(), command: "shell".to_string() }],
@@ -3019,14 +3048,33 @@ linked = ["z.env", "./a.env", "z.env"]
         row.apply_status(StatusSummary::default());
         row.in_use = Some(crate::utils::in_use::InUseInspection {
             processes: vec![
-                crate::utils::process::ProcessInfo { pid: 42, name: "shell".to_string(), command: "shell".to_string() },
+                crate::utils::process::ProcessInfo { pid: 42, name: "treehouse".to_string(), command: "treehouse get".to_string() },
                 crate::utils::process::ProcessInfo { pid: 43, name: "editor".to_string(), command: "editor".to_string() },
+                crate::utils::process::ProcessInfo {
+                    pid: 44,
+                    name: "codex-code-host".to_string(),
+                    command: "/opt/codex/bin/codex-code-host".to_string(),
+                },
+                crate::utils::process::ProcessInfo {
+                    pid: 45,
+                    name: "codex-code-mode-host".to_string(),
+                    command: "/opt/codex/bin/codex-code-mode-host".to_string(),
+                },
             ],
             active_sessions: vec!["repo-feature".to_string()],
         });
 
         let json = JsonWorktree::from_row(&row, None);
-        assert_eq!(json.in_use_reasons, ["process:42 (shell)", "process:43 (editor)", "tmux:repo-feature"]);
+        assert_eq!(
+            json.in_use_reasons,
+            [
+                "process:42 (treehouse)",
+                "process:43 (editor)",
+                "process:44 (codex-code-host)",
+                "process:45 (codex-code-mode-host)",
+                "tmux:repo-feature"
+            ]
+        );
     }
 
     #[test]

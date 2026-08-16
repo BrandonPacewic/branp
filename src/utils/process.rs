@@ -11,6 +11,29 @@ pub struct ProcessInfo {
     pub command: String,
 }
 
+/// Return whether a process is known BP/Treehouse launcher machinery.
+///
+/// This is intentionally narrow and based on the exact signatures observed in
+/// the launcher process list: the current BP PID, the `treehouse` executable,
+/// Codex, either observed Codex code host spelling, or Node invoking the Codex
+/// executable. Similar names and ordinary user processes remain visible.
+pub fn is_known_launcher_process(process: &ProcessInfo) -> bool {
+    if process.pid == std::process::id() {
+        return true;
+    }
+
+    let executable = process.command.split_whitespace().next().unwrap_or_default();
+    let executable_name = executable.rsplit('/').next().unwrap_or(executable);
+
+    match process.name.as_str() {
+        "treehouse" => executable_name == "treehouse" || process.command == "treehouse",
+        "codex" => executable_name == "codex",
+        "codex-code-host" | "codex-code-mode-host" => executable_name == process.name,
+        "node" => executable_name == "node" && process.command.split_whitespace().any(|argument| argument.rsplit('/').next() == Some("codex")),
+        _ => false,
+    }
+}
+
 /// Find processes whose current working directory is `path` or one of its descendants.
 pub fn processes_in_worktree(path: &Path) -> Result<Vec<ProcessInfo>, CliError> {
     let path = canonical_path(path)?;
@@ -209,6 +232,32 @@ mod tests {
         let dir = test_directory("unused");
         assert!(processes_in_worktree(&dir).unwrap().is_empty());
         remove_test_directory(&dir);
+    }
+
+    #[test]
+    fn recognizes_only_exact_launcher_process_signatures() {
+        let filtered = [
+            ProcessInfo { pid: 42, name: "treehouse".to_string(), command: "treehouse get".to_string() },
+            ProcessInfo { pid: 43, name: "codex".to_string(), command: "/opt/codex/bin/codex --model gpt".to_string() },
+            ProcessInfo { pid: 44, name: "codex-code-host".to_string(), command: "/opt/codex/bin/codex-code-host".to_string() },
+            ProcessInfo { pid: 45, name: "codex-code-mode-host".to_string(), command: "/opt/codex/bin/codex-code-mode-host".to_string() },
+            ProcessInfo { pid: 46, name: "node".to_string(), command: "node /opt/codex/bin/codex --model gpt".to_string() },
+        ];
+
+        assert!(filtered.iter().all(is_known_launcher_process));
+    }
+
+    #[test]
+    fn retains_similar_names_and_real_user_processes() {
+        let retained = [
+            ProcessInfo { pid: 42, name: "treehouse-helper".to_string(), command: "treehouse-helper".to_string() },
+            ProcessInfo { pid: 43, name: "codex".to_string(), command: "/usr/local/bin/codex-wrapper".to_string() },
+            ProcessInfo { pid: 44, name: "node".to_string(), command: "node".to_string() },
+            ProcessInfo { pid: 45, name: "node".to_string(), command: "node server.js".to_string() },
+            ProcessInfo { pid: 46, name: "editor".to_string(), command: "editor".to_string() },
+        ];
+
+        assert!(retained.iter().all(|process| !is_known_launcher_process(process)));
     }
 
     #[cfg(unix)]
